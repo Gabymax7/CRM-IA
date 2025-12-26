@@ -9,36 +9,21 @@ from datetime import datetime, timedelta
 import pandas as pd
 import urllib.parse
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN ESTÁTICA ---
 SHEET_ID = "17Cn82TTSyXbipbW3zZ7cvYe6L6aDkX3EPK6xO7MTxzU"
 MI_EMAIL_CALENDARIO = "gabrielromero900@gmail.com"
 ID_CARPETA_PADRE_DRIVE = "1XS4-h6-VpY_P-C3t_L-X4r8F6O-9-C-y"
 
 st.set_page_config(page_title="CRM-IA: MyCar Centro", page_icon="🚗", layout="wide")
 
+# --- GESTIÓN DE CUOTA ---
 if "uso_ia" not in st.session_state: st.session_state.uso_ia = []
 if "messages" not in st.session_state: st.session_state.messages = []
 
-# --- BARRA LATERAL (SELECTOR DE IA) ---
-with st.sidebar:
-    st.header("⚙️ Configuración")
-    # Selector de modelos para saltar límites de cuota
-    modelo_elegido = st.selectbox(
-        "Cambiar versión de IA", 
-        ["models/gemini-1.5-flash", "models/gemini-2.0-flash", "models/gemini-3-flash-preview"],
-        index=2,
-        help="Si una versión da error de cuota, cambia a otra para seguir testeando."
-    )
-    
-    # Contador de mensajes
+def limpiar_cuota():
     ahora = datetime.now()
     st.session_state.uso_ia = [t for t in st.session_state.uso_ia if ahora - t < timedelta(seconds=60)]
-    st.metric("Mensajes (último min)", f"{len(st.session_state.uso_ia)} / 20")
-    
-    st.divider()
-    if st.button("🗑️ Limpiar Chat"):
-        st.session_state.messages = []
-        st.rerun()
+    return len(st.session_state.uso_ia)
 
 # --- CONEXIÓN ---
 def conectar():
@@ -64,14 +49,25 @@ def conectar():
 ws_stock, ws_leeds, calendar_service, drive_service = conectar()
 if ws_stock is None: st.stop()
 
-# --- INICIALIZAR IA SELECCIONADA ---
+# --- IA: GEMINI 3 FLASH PREVIEW ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel(modelo_elegido)
+model = genai.GenerativeModel('models/gemini-3-flash-preview')
 
-# --- FUNCIONES DE DRIVE Y BORRADO ---
-def crear_carpeta_drive(nombre):
+# --- BARRA LATERAL ---
+with st.sidebar:
+    st.header("⚙️ CRM MyCar")
+    mensajes_usados = limpiar_cuota()
+    st.metric("Mensajes (último min)", f"{mensajes_usados} / 20")
+    if mensajes_usados >= 18: st.warning("⚠️ Límite de cuota cerca.")
+    st.divider()
+    if st.button("🗑️ Limpiar Historial"):
+        st.session_state.messages = []
+        st.rerun()
+
+# --- FUNCIONES DE LÓGICA ---
+def crear_carpeta_drive(nombre_cliente):
     try:
-        meta = {'name': nombre, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [ID_CARPETA_PADRE_DRIVE]}
+        meta = {'name': nombre_cliente, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [ID_CARPETA_PADRE_DRIVE]}
         folder = drive_service.files().create(body=meta, fields='id, webViewLink').execute()
         return folder.get('webViewLink')
     except: return "-"
@@ -83,7 +79,19 @@ def eliminar_registro(hoja, criterio):
         return True
     except: return False
 
-# --- INTERFAZ PRINCIPAL ---
+def gestionar_calendario(accion, resumen, fecha=None):
+    try:
+        if accion == "CREAR":
+            event = {'summary': resumen, 'start': {'date': fecha, 'timeZone': 'America/Argentina/Buenos_Aires'}, 'end': {'date': fecha, 'timeZone': 'America/Argentina/Buenos_Aires'}}
+            calendar_service.events().insert(calendarId=MI_EMAIL_CALENDARIO, body=event).execute()
+        elif accion == "BORRAR":
+            events = calendar_service.events().list(calendarId=MI_EMAIL_CALENDARIO, q=resumen).execute()
+            for e in events.get('items', []):
+                calendar_service.events().delete(calendarId=MI_EMAIL_CALENDARIO, eventId=e['id']).execute()
+        return True
+    except: return False
+
+# --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
 c1, c2 = st.columns(2)
@@ -94,8 +102,8 @@ with c2:
 
 archivo = st.file_uploader("📷 Cargar PDF o Foto", type=["pdf", "jpg", "png", "jpeg"])
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]): st.markdown(msg["content"])
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]): st.markdown(message["content"])
 
 if prompt := st.chat_input("¿Qué novedades hay?"):
     st.session_state.uso_ia.append(datetime.now())
@@ -103,27 +111,31 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
     with st.chat_message("user"): st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        contexto = f"Hoy: {datetime.now().strftime('%Y-%m-%d')}. Eres gestor de MyCar. Sé directo. Stock: {ws_stock.get_all_records()[:5]}"
+        contexto = f"Hoy: {datetime.now().strftime('%Y-%m-%d')}. Eres gestor de MyCar. Sé conciso. Stock: {ws_stock.get_all_records()[:10]}"
         try:
-            input_ia = [contexto, prompt]
-            if archivo: input_ia.append({"mime_type": archivo.type, "data": archivo.getvalue()})
+            inputs = [contexto, prompt]
+            if archivo: inputs.append({"mime_type": archivo.type, "data": archivo.getvalue()})
             
-            res = model.generate_content(input_ia)
-            visible = re.sub(r"DATA_START.*?DATA_END", "", res.text, flags=re.DOTALL).strip()
-            st.markdown(visible)
-            st.session_state.messages.append({"role": "assistant", "content": visible})
+            response = model.generate_content(inputs)
+            res_text = response.text
+            respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
+            st.markdown(respuesta_visible)
+            st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
 
-            for m in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", res.text, re.DOTALL):
+            for m in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", res_text, re.DOTALL):
                 data = json.loads(m)
                 if data["ACCION"] == "GUARDAR_AUTO":
                     link = crear_carpeta_drive(f"{data['Cliente']} - {data['Vehiculo']}")
                     ws_stock.append_row([datetime.now().strftime("%d/%m/%Y"), data['Cliente'], data['Vehiculo'], data.get('Año','-'), data.get('KM','-'), data.get('Color','-'), "-", "-", data.get('Patente','-'), link])
+                elif data["ACCION"] == "GUARDAR_LEED":
+                    ws_leeds.append_row([datetime.now().strftime("%d/%m/%Y"), data['Cliente'], data.get('Busca','-'), data.get('Telefono','-'), data.get('Nota','-'), data.get('Fecha_Remind','-')])
+                    if data.get("Fecha_Remind"): gestionar_calendario("CREAR", f"Llamar a {data['Cliente']}", data["Fecha_Remind"])
                 elif data["ACCION"] == "ELIMINAR_AUTO": eliminar_registro(ws_stock, data['Cliente'])
                 elif data["ACCION"] == "ELIMINAR_LEED": eliminar_registro(ws_leeds, data['Cliente'])
+                elif data["ACCION"] == "BORRAR_EVENTO": gestionar_calendario("BORRAR", f"Llamar a {data['Cliente']}")
                 elif data["ACCION"] == "WHATSAPP":
                     st.link_button("📲 Enviar WhatsApp", f"https://wa.me/{data['Telefono']}?text={urllib.parse.quote(data['Mensaje'])}")
                 st.success(f"Hecho: {data['ACCION']}")
         except Exception as e:
-            if "quota" in str(e).lower():
-                st.warning("⚠️ Límite agotado en este modelo. Selecciona otro en el panel de la izquierda.")
+            if "quota" in str(e).lower(): st.warning("⚠️ Límite de cuota excedido. Espera 60s.")
             else: st.error(f"Error: {e}")
