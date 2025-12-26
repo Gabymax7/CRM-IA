@@ -12,7 +12,7 @@ import urllib.parse
 # --- CONFIGURACIÓN ---
 SHEET_ID = "17Cn82TTSyXbipbW3zZ7cvYe6L6aDkX3EPK6xO7MTxzU"
 MI_EMAIL_CALENDARIO = "gabrielromero900@gmail.com"
-ID_CARPETA_PADRE_DRIVE = "1XS4-h6-VpY_P-C3t_L-X4r8F6O-9-C-y" # ID de tu carpeta de autos en Drive
+ID_CARPETA_PADRE_DRIVE = "1XS4-h6-VpY_P-C3t_L-X4r8F6O-9-C-y"
 
 st.set_page_config(page_title="CRM-IA: MyCar Centro", page_icon="🚗", layout="wide")
 
@@ -76,22 +76,27 @@ def gestionar_calendario(accion, resumen, fecha=None):
 
 def guardar_stock(data):
     hoy = datetime.now().strftime("%d/%m/%Y")
-    link = crear_carpeta_drive(data['Cliente'])
+    # Crear carpeta en Drive para el nuevo auto
+    link = crear_carpeta_drive(f"{data['Cliente']} - {data['Vehiculo']}")
     ws_stock.append_row([hoy, data['Cliente'], data['Vehiculo'], data.get('Año','-'), data.get('KM','-'), data.get('Color','-'), "-", "-", data.get('Patente','-'), link])
+
+def guardar_leed(data):
+    hoy = datetime.now().strftime("%d/%m/%Y")
+    ws_leeds.append_row([hoy, data['Cliente'], data.get('Busca','-'), data.get('Telefono','-'), data.get('Nota','-'), data.get('Fecha_Remind','-')])
 
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
-c1, c2 = st.columns(2)
-with c1: 
+col1, col2 = st.columns(2)
+with col1: 
     if st.button("📊 Ver Stock"): st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
-with c2: 
+with col2: 
     if st.button("👥 Ver Leeds"): st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
 archivo = st.file_uploader("📷 Subir PDF/Foto", type=["pdf", "jpg", "png", "jpeg"])
 
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]): st.markdown(m["content"])
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]): st.markdown(message["content"])
 
 if prompt := st.chat_input("¿Qué novedades hay?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -99,13 +104,14 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
 
     with st.chat_message("assistant"):
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-        stock_actual = ws_stock.get_all_records()
+        # Leer datos reales para que la IA responda con precisión
+        contexto_stock = ws_stock.get_all_records()
         
         instruccion = f"""
         Hoy es {fecha_hoy}. Eres el gestor de MyCar Centro. Responde CORTO y DIRECTO.
-        STOCK: {stock_actual}
+        STOCK REAL: {contexto_stock}
         ACCIONES: GUARDAR_AUTO, ELIMINAR_AUTO, GUARDAR_LEED, ELIMINAR_LEED, BORRAR_EVENTO, WHATSAPP.
-        JSON: DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Telefono": "...", "Fecha_Remind": "YYYY-MM-DD", "Mensaje": "..."}} DATA_END
+        JSON OBLIGATORIO: DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Telefono": "...", "Fecha_Remind": "YYYY-MM-DD", "Mensaje": "..."}} DATA_END
         """
         
         try:
@@ -118,17 +124,23 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
             st.markdown(respuesta_visible)
             st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
 
-            for m in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", res_text, re.DOTALL):
+            matches = re.findall(r"DATA_START\s*(.*?)\s*DATA_END", res_text, re.DOTALL)
+            for m in matches:
                 data = json.loads(m)
                 if data["ACCION"] == "GUARDAR_AUTO": guardar_stock(data)
                 elif data["ACCION"] == "ELIMINAR_AUTO": eliminar_registro(ws_stock, data['Cliente'])
+                elif data["ACCION"] == "GUARDAR_LEED": 
+                    guardar_leed(data)
+                    if data.get("Fecha_Remind") and data["Fecha_Remind"] != "-":
+                        gestionar_calendario("CREAR", f"Llamar a {data['Cliente']}", data["Fecha_Remind"])
                 elif data["ACCION"] == "ELIMINAR_LEED": eliminar_registro(ws_leeds, data['Cliente'])
                 elif data["ACCION"] == "BORRAR_EVENTO": gestionar_calendario("BORRAR", f"Llamar a {data['Cliente']}")
                 elif data["ACCION"] == "WHATSAPP":
                     link_wa = f"https://wa.me/{data['Telefono']}?text={urllib.parse.quote(data['Mensaje'])}"
                     st.link_button("📲 Enviar WhatsApp", link_wa)
-                st.success(f"Acción {data['ACCION']} completada.")
-
+                st.success(f"Operación {data['ACCION']} realizada.")
+        
         except Exception as e:
-            if "quota" in str(e).lower(): st.warning("⚠️ Límite de cuota excedido. Espera 60 segundos.")
+            if "quota" in str(e).lower():
+                st.warning("⚠️ Límite de mensajes alcanzado. Espera 60 segundos antes de volver a preguntar.")
             else: st.error(f"Error: {e}")
