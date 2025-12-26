@@ -39,9 +39,9 @@ except Exception as e:
     st.error(f"Error de conexión: {e}")
     st.stop()
 
-# --- MODELO GEMINI 3 FLASH (Lanzamiento 17/12/2025) ---
+# --- MODELO GEMINI 3 FLASH ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-3-flash') 
+model = genai.GenerativeModel('gemini-3-flash') # Versión última a dic 2025
 
 # --- FUNCIONES ---
 def procesar_archivo(uploaded_file):
@@ -65,9 +65,12 @@ st.title("🤖 CRM-IA: MyCar Centro")
 
 c1, c2 = st.columns(2)
 with c1: 
-    if st.button("📊 Ver Stock"): st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
+    if st.button("📊 Ver Stock"):
+        st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
 with c2: 
-    if st.button("👥 Ver Leeds"): st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
+    # LÍNEA 91 CORREGIDA: Se cerraron todos los paréntesis correctamente
+    if st.button("👥 Ver Leeds"):
+        st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
 archivo = st.file_uploader("📷 Foto de Patente o Lista", type=["pdf", "jpg", "png", "jpeg"])
 
@@ -84,12 +87,10 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
         
         instruccion = f"""
         Hoy es {fecha_hoy}. Eres el gestor de MyCar. 
-        Stock actual para consultas: {stock_actual}
-        
+        Stock actual: {stock_actual}
         REGLAS:
         1. PARTICULAR vende: GUARDAR_AUTO.
         2. Alguien busca COMPRAR: GUARDAR_LEED.
-        
         JSON OBLIGATORIO:
         DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Patente": "...", "Año": "...", "KM": "...", "Color": "...", "Busca": "...", "Fecha_Remind": "YYYY-MM-DD", "Nota": "..."}} DATA_END
         """
@@ -98,13 +99,10 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
         if archivo: contenidos.append(procesar_archivo(archivo))
             
         try:
-            # Uso de la potencia de Gemini 3 Flash para procesamiento instantáneo
             response = model.generate_content(contenidos)
             res_text = response.text
             respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
             st.markdown(respuesta_visible)
             st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
-            
-            # (El procesamiento del JSON sigue igual abajo)
         except Exception as e:
             st.error(f"Error en la IA: {e}")
