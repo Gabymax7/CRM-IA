@@ -14,6 +14,7 @@ MI_EMAIL_CALENDARIO = "gabrielromero900@gmail.com"
 
 st.set_page_config(page_title="CRM-IA: MyCar", page_icon="🚗", layout="wide")
 
+# Inicialización de historial
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -21,11 +22,13 @@ if "messages" not in st.session_state:
 def conectar():
     SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
     if "gcp_service_account" in st.secrets:
+        # Streamlit Cloud
         creds_info = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_info:
             creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
     else:
+        # Local
         creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
     
     client = gspread.authorize(creds)
@@ -42,7 +45,13 @@ except Exception as e:
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
-# --- FUNCIONES DE LÓGICA ---
+# --- FUNCIONES DE APOYO ---
+
+def procesar_archivo(uploaded_file):
+    """Convierte el archivo de Streamlit al formato de Gemini"""
+    if uploaded_file is not None:
+        return {"mime_type": uploaded_file.type, "data": uploaded_file.getvalue()}
+    return None
 
 def crear_evento_calendario(resumen, fecha_iso):
     try:
@@ -78,12 +87,6 @@ def guardar_o_actualizar_leed(data):
         ws_leeds.append_row([hoy, data['Cliente'], data['Busca'], data.get('Telefono','-'), data.get('Nota','-'), data.get('Fecha_Remind','-')])
         return "nuevo"
 
-def buscar_coincidencias(auto_nuevo):
-    leeds = ws_leeds.get_all_records()
-    for l in leeds:
-        if str(l.get('Busca', '')).lower() in auto_nuevo.lower():
-            st.warning(f"💡 ¡AVISO! {l['Cliente']} busca un {auto_nuevo}. Tel: {l.get('Telefono','')}")
-
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
@@ -107,13 +110,19 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
         instruccion = f"""
         Hoy es {fecha_hoy}. Eres el gestor de MyCar.
         REGLAS:
-        1. PARTICULAR vende: GUARDAR_AUTO. Extrae Año, KM, Color.
+        1. PARTICULAR vende: GUARDAR_AUTO. Saca Año, KM, Color.
         2. Alguien busca COMPRAR: GUARDAR_LEED.
-        3. Foto de PATENTE: Si el usuario dice de quién es el auto de la foto, usa ACTUALIZAR_PATENTE.
-        JSON OBLIGATORIO AL FINAL:
+        3. Foto de PATENTE: ACTUALIZAR_PATENTE.
+        JSON OBLIGATORIO:
         DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Patente": "...", "Año": "...", "KM": "...", "Color": "...", "Busca": "...", "Fecha_Remind": "YYYY-MM-DD", "Nota": "..."}} DATA_END
         """
-        response = model.generate_content([instruccion, prompt, archivo] if archivo else [instruccion, prompt])
+        
+        # Corrección del envío multimodal
+        contenidos = [instruccion, prompt]
+        if archivo:
+            contenidos.append(procesar_archivo(archivo))
+            
+        response = model.generate_content(contenidos)
         res_text = response.text
         respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
         st.markdown(respuesta_visible)
@@ -125,7 +134,6 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
                 if data["ACCION"] in ["GUARDAR_AUTO", "ACTUALIZAR_PATENTE"]:
                     guardar_o_actualizar_stock(data)
                     st.success("✅ Stock actualizado.")
-                    buscar_coincidencias(data.get('Vehiculo',''))
                 elif data["ACCION"] == "GUARDAR_LEED":
                     guardar_o_actualizar_leed(data)
                     st.success("✅ Leeds actualizado.")
