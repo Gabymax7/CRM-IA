@@ -11,8 +11,9 @@ import pandas as pd
 import urllib.parse
 import time
 
-# --- 📍 CONFIGURACIÓN ---
+# --- 📍 CONFIGURACIÓN (IDs REVISADOS) ---
 SHEET_ID = "17Cn82TTSyXbipbW3zZ7cvYe6L6aDkX3EPK6xO7MTxzU"
+# Este es el ID NUEVO que me pasaste. Asegúrate que en tu archivo quede ESTE y no el viejo.
 ID_CARPETA_PADRE_DRIVE = "1ZMZQm3gRER4lzof8wCToY6IqLgivhGms" 
 
 st.set_page_config(page_title="CRM IA", page_icon="🚗", layout="wide")
@@ -34,35 +35,53 @@ def encontrar_fila_flexible(hoja, texto_busqueda):
     try:
         registros = hoja.get_all_records()
         texto_busqueda = str(texto_busqueda).lower().strip()
+        # Mapeo especial para números (ej: "borra el 1")
+        if texto_busqueda.isdigit():
+            idx = int(texto_busqueda) - 1
+            if 0 <= idx < len(registros):
+                return idx + 2 # +2 porque sheets empieza en 1 y tiene header
+        
+        # Búsqueda por texto
         for i, row in enumerate(registros, start=2):
-            cliente_en_excel = str(row.get('Cliente', '')).lower().strip()
-            if texto_busqueda in cliente_en_excel:
+            # Buscamos en todas las columnas por si acaso
+            fila_texto = " ".join([str(v).lower() for v in row.values()])
+            if texto_busqueda in fila_texto:
                 return i
         return None
     except: return None
 
-# --- CEREBRO IA (MODO OBEDIENTE) ---
+# --- CEREBRO IA (GROQ + GEMINI) ---
 def consultar_ia(prompt_usuario, archivo=None):
-    # Datos frescos
-    stock_txt = str(ws_stock.get_all_records())
-    leeds_txt = str(ws_leeds.get_all_records())
+    # Leemos datos para dárselos a la IA
+    try:
+        stock_raw = ws_stock.get_all_records()
+        leeds_raw = ws_leeds.get_all_records()
+        # Convertimos a texto simple para que la IA lo entienda mejor
+        stock_txt = "\n".join([f"{i+1}. {r['Cliente']} - {r['Vehiculo']} ({r.get('Año','')})" for i, r in enumerate(stock_raw)])
+        leeds_txt = "\n".join([f"{i+1}. {r['Cliente']} busca {r['Busca']}" for i, r in enumerate(leeds_raw)])
+    except:
+        stock_txt = "Sin datos"
+        leeds_txt = "Sin datos"
     
     instruccion_sistema = f"""
-    ERES UN ROBOT EJECUTOR DE MYCAR. NO PIENSES, SOLO ACTÚA.
+    ERES EL GESTOR DE LA AGENCIA MYCAR.
     
-    DATOS REALES:
-    STOCK: {stock_txt}
-    LEEDS: {leeds_txt}
+    DATOS ACTUALES:
+    --- STOCK ---
+    {stock_txt}
+    --- LEEDS ---
+    {leeds_txt}
     
-    REGLAS ESTRICTAS:
-    1. Si el usuario confirma una acción (ej: "sí", "hazlo", "a ambos"), NO EXPLIQUES NADA. SOLO GENERA EL JSON.
-    2. Si te piden borrar y el nombre existe, GENERA EL JSON DE INMEDIATO.
-    3. NO RESUMAS la situación.
+    REGLAS DE RESPUESTA:
+    1. Si te preguntan "¿qué hay?", RESPONDE CON UNA LISTA LIMPIA (No uses JSON ni corchetes). Usa viñetas.
+    2. Si te dicen "borra el 1" o "borra a Juan", genera el JSON correspondiente.
+    3. Si te dicen "borra todo", responde que por seguridad debe ser uno por uno.
+    4. NO ALUCINES DATOS. Solo usa lo que ves arriba.
     
-    FORMATO JSON OBLIGATORIO (Único output permitido para acciones):
+    FORMATO JSON PARA ACCIONES (Solo úsalo si hay una orden clara):
     DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Telefono": "..."}} DATA_END
     
-    ACCIONES: GUARDAR_AUTO, ELIMINAR_AUTO, ELIMINAR_LEED, WHATSAPP.
+    ACCIONES VÁLIDAS: GUARDAR_AUTO, ELIMINAR_AUTO, GUARDAR_LEED, ELIMINAR_LEED, WHATSAPP.
     """
 
     if archivo:
@@ -73,16 +92,16 @@ def consultar_ia(prompt_usuario, archivo=None):
         return res.text
     else:
         client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-        # Enviamos historial para que recuerde el contexto "anterior"
         mensajes_api = [{"role": "system", "content": instruccion_sistema}]
-        for m in st.session_state.messages[-5:]: # Últimos 5 mensajes
+        # Memoria corta (últimos 4 mensajes)
+        for m in st.session_state.messages[-4:]:
             mensajes_api.append({"role": m["role"], "content": m["content"]})
         mensajes_api.append({"role": "user", "content": prompt_usuario})
 
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=mensajes_api,
-            temperature=0 # CERO creatividad para que sea obediente
+            temperature=0 # Cero creatividad para evitar errores
         )
         return completion.choices[0].message.content
 
@@ -93,41 +112,45 @@ tab1, tab2, tab3 = st.tabs(["💬 Chat", "📦 Stock", "👥 Leeds"])
 if "messages" not in st.session_state: st.session_state.messages = []
 
 with tab1:
-    # 1. CARGADOR ARRIBA
-    archivo = st.file_uploader("📷 Adjuntar", type=["pdf", "jpg", "png", "mp4"])
+    # 1. Cargador (Arriba)
+    archivo = st.file_uploader("📷 Adjuntar archivo", type=["pdf", "jpg", "png", "mp4"])
 
-    # 2. HISTORIAL DE MENSAJES (ESTO TIENE QUE IR ANTES DEL INPUT PARA QUE EL INPUT QUEDE ABAJO)
-    container_chat = st.container()
-    with container_chat:
+    # 2. Contenedor de Chat (Para mantener mensajes visualmente ordenados)
+    chat_container = st.container()
+    with chat_container:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # 3. INPUT DE TEXTO (AL FINAL DEL CODIGO VISUAL)
+    # 3. Input (Siempre abajo)
     if prompt := st.chat_input("Escribe una orden..."):
-        # Mostrar mensaje usuario
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
+        with chat_container:
+            with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
             with st.spinner("Procesando..."):
                 try:
                     respuesta = consultar_ia(prompt, archivo)
                     
-                    # Ocultar el JSON sucio y mostrar solo texto limpio
+                    # Limpieza visual: Quitar el JSON de la vista del usuario
                     texto_visible = re.sub(r"DATA_START.*?DATA_END", "", respuesta, flags=re.DOTALL).strip()
                     if texto_visible:
                         st.markdown(texto_visible)
                         st.session_state.messages.append({"role": "assistant", "content": texto_visible})
 
-                    # Ejecutar acciones silenciosamente
+                    # Procesador de Acciones
                     accion_realizada = False
                     for match in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", respuesta, re.DOTALL):
                         data = json.loads(match)
                         
                         if data["ACCION"] == "GUARDAR_AUTO":
                             meta = {'name': f"{data['Cliente']} - {data['Vehiculo']}", 'mimeType': 'application/vnd.google-apps.folder', 'parents': [ID_CARPETA_PADRE_DRIVE]}
-                            f = drive_service.files().create(body=meta, fields='webViewLink').execute()
-                            ws_stock.append_row([datetime.now().strftime("%d/%m/%Y"), data['Cliente'], data['Vehiculo'], data.get('Año','-'), data.get('Km','-'), data.get('Color','-'), "-", "-", data.get('Patente','-'), f.get('webViewLink')])
+                            try:
+                                f = drive_service.files().create(body=meta, fields='webViewLink').execute()
+                                link_drive = f.get('webViewLink')
+                            except: link_drive = "Error ID Drive"
+                            
+                            ws_stock.append_row([datetime.now().strftime("%d/%m/%Y"), data['Cliente'], data['Vehiculo'], data.get('Año','-'), data.get('Km','-'), data.get('Color','-'), "-", "-", data.get('Patente','-'), link_drive])
                             st.toast(f"✅ Guardado: {data['Vehiculo']}")
                             accion_realizada = True
 
@@ -135,9 +158,9 @@ with tab1:
                             fila = encontrar_fila_flexible(ws_stock, data['Cliente'])
                             if fila:
                                 ws_stock.delete_rows(fila)
-                                st.success(f"🗑️ Eliminado del Stock: {data['Cliente']}")
+                                st.success(f"🗑️ Auto eliminado: {data['Cliente']}")
                                 accion_realizada = True
-                            else: st.error("No encontré ese cliente.")
+                            else: st.warning(f"No encontré a '{data['Cliente']}' para borrar.")
 
                         elif data["ACCION"] == "ELIMINAR_LEED":
                             fila = encontrar_fila_flexible(ws_leeds, data['Cliente'])
@@ -145,22 +168,24 @@ with tab1:
                                 ws_leeds.delete_rows(fila)
                                 st.success(f"🗑️ Leed eliminado: {data['Cliente']}")
                                 accion_realizada = True
-                        
+                            else: st.warning("No encontré ese Leed.")
+
                         elif data["ACCION"] == "WHATSAPP":
-                             link = f"https://wa.me/{data.get('Telefono','')}?text={urllib.parse.quote(data.get('Mensaje',''))}"
-                             st.link_button(f"📲 WhatsApp a {data['Cliente']}", link)
-                             accion_realizada = True
+                            link = f"https://wa.me/{data.get('Telefono','')}?text={urllib.parse.quote(data.get('Mensaje',''))}"
+                            st.link_button(f"📲 WhatsApp a {data['Cliente']}", link)
+                            accion_realizada = True
 
                     if accion_realizada:
                         time.sleep(1)
                         st.rerun()
 
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error técnico: {e}")
 
 with tab2:
     if st.button("🔄 Refrescar Stock"): st.rerun()
     st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
 
 with tab3:
+    if st.button("🔄 Refrescar Leeds"): st.rerun()
     st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
