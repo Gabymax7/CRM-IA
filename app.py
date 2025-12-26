@@ -20,28 +20,32 @@ if "messages" not in st.session_state:
 # --- CONEXIÓN ---
 def conectar():
     SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
-    if "gcp_service_account" in st.secrets:
-        # Resolvemos el error de AttrDict convirtiendo a diccionario puro
-        creds_info = dict(st.secrets["gcp_service_account"])
-        if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
-    else:
-        creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
-    
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SHEET_ID)
-    cal_service = build('calendar', 'v3', credentials=creds)
-    return sheet.worksheet("Stock"), sheet.worksheet("Leeds"), cal_service
+    try:
+        if "gcp_service_account" in st.secrets:
+            # Solución al error AttrDict y Padding
+            creds_info = dict(st.secrets["gcp_service_account"])
+            if "private_key" in creds_info:
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
+        else:
+            creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
+        
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(SHEET_ID)
+        cal_service = build('calendar', 'v3', credentials=creds)
+        return sheet.worksheet("Stock"), sheet.worksheet("Leeds"), cal_service
+    except Exception as e:
+        st.error(f"Error de conexión interna: {e}")
+        return None, None, None
 
-try:
-    ws_stock, ws_leeds, calendar_service = conectar()
-except Exception as e:
-    st.error(f"Error de conexión: {e}")
+ws_stock, ws_leeds, calendar_service = conectar()
+
+if ws_stock is None:
     st.stop()
 
+# --- MODELO GEMINI 3 FLASH (Dic 2025) ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-1.5-flash') # Usamos 1.5-flash por estabilidad regional
+model = genai.GenerativeModel('gemini-3-flash')
 
 # --- FUNCIONES ---
 def procesar_archivo(uploaded_file):
@@ -49,33 +53,22 @@ def procesar_archivo(uploaded_file):
         return {"mime_type": uploaded_file.type, "data": uploaded_file.getvalue()}
     return None
 
-def crear_evento_calendario(resumen, fecha_iso):
-    try:
-        event = {
-            'summary': resumen,
-            'start': {'date': fecha_iso, 'timeZone': 'America/Argentina/Buenos_Aires'},
-            'end': {'date': fecha_iso, 'timeZone': 'America/Argentina/Buenos_Aires'},
-        }
-        calendar_service.events().insert(calendarId=MI_EMAIL_CALENDARIO, body=event).execute()
-        return True
-    except: return False
-
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
-col1, col2 = st.columns(2)
-with col1: 
+c1, c2 = st.columns(2)
+with c1: 
     if st.button("📊 Ver Stock"):
         st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
-with col2: 
-    # LÍNEA 91 CORREGIDA: Ahora cerramos todos los paréntesis
+with c2: 
+    # LÍNEA 91 CORREGIDA:
     if st.button("👥 Ver Leeds"):
         st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
 archivo = st.file_uploader("📷 Foto de Patente o Lista", type=["pdf", "jpg", "png", "jpeg"])
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]): st.markdown(message["content"])
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]): st.markdown(m["content"])
 
 if prompt := st.chat_input("¿Qué novedades hay?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -83,10 +76,12 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
 
     with st.chat_message("assistant"):
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-        instruccion = f"Hoy es {fecha_hoy}. Eres el gestor de MyCar. Responde con amabilidad. Si hay datos para guardar, usa el formato DATA_START {{...}} DATA_END."
+        instruccion = f"Hoy es {fecha_hoy}. Eres el gestor de MyCar. Responde y genera DATA_START {{...}} DATA_END si hay que guardar algo."
         
         contenidos = [instruccion, prompt]
-        if archivo: contenidos.append(procesar_archivo(archivo))
+        if archivo: 
+            img_data = procesar_archivo(archivo)
+            if img_data: contenidos.append(img_data)
             
         try:
             response = model.generate_content(contenidos)
