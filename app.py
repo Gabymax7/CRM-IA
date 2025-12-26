@@ -14,6 +14,7 @@ MI_EMAIL_CALENDARIO = "gabrielromero900@gmail.com"
 
 st.set_page_config(page_title="CRM-IA: MyCar", page_icon="🚗", layout="wide")
 
+# 1. INICIALIZAR ESTADO (Muy importante para evitar el AttributeError)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -21,12 +22,15 @@ if "messages" not in st.session_state:
 def conectar():
     SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
     
-    # Intenta leer desde Streamlit Cloud (Secrets)
     if "gcp_service_account" in st.secrets:
-        info = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(info, scopes=SCOPE)
-    # Local
+        # Streamlit Cloud: st.secrets ya es un diccionario
+        creds_info = dict(st.secrets["gcp_service_account"])
+        # Corregir saltos de línea en la clave privada si es necesario
+        if "private_key" in creds_info:
+            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+        creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
     else:
+        # Uso local con el archivo .json
         creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
     
     client = gspread.authorize(creds)
@@ -38,12 +42,12 @@ try:
     ws_stock, ws_leeds, calendar_service = conectar()
 except Exception as e:
     st.error(f"Error de conexión: {e}")
+    st.stop()
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # --- FUNCIONES ---
-
 def crear_evento_calendario(resumen, fecha_iso):
     try:
         event = {
@@ -60,7 +64,6 @@ def guardar_o_actualizar_stock(data):
     try:
         celda = ws_stock.find(data['Cliente'], in_column=2)
         fila = celda.row
-        # Actualizamos datos técnicos si el auto coincide
         ws_stock.update(range_name=f"D{fila}:F{fila}", values=[[data.get('Año','-'), data.get('KM','-'), data.get('Color','-')]])
         if data.get('Patente'): ws_stock.update_cell(fila, 9, data['Patente'])
         return "actualizado"
@@ -86,6 +89,52 @@ st.title("🤖 CRM-IA: MyCar Centro")
 
 c1, c2 = st.columns(2)
 with c1: 
-    if st.button("📊 Ver Stock"): st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
+    if st.button("📊 Ver Stock"):
+        st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
 with c2: 
-    if st.button("👥 Ver Leeds"): st.dataframe(pd.DataFrame(ws_
+    if st.button("👥 Ver Leeds"):
+        st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
+
+archivo = st.file_uploader("📷 Subir foto de Patente o Lista", type=["pdf", "jpg", "png", "jpeg"])
+
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]): st.markdown(m["content"])
+
+if prompt := st.chat_input("¿Qué novedades hay?"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"): st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+        instruccion = f"""
+        Hoy es {fecha_hoy}. Eres el gestor de MyCar.
+        REGLAS:
+        1. PARTICULAR vende/ofrece: GUARDAR_AUTO. Saca Año, KM, Color.
+        2. Alguien busca COMPRAR: GUARDAR_LEED.
+        3. Foto de PATENTE: ACTUALIZAR_PATENTE.
+        JSON OBLIGATORIO:
+        DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Patente": "...", "Año": "...", "KM": "...", "Color": "...", "Busca": "...", "Fecha_Remind": "YYYY-MM-DD", "Nota": "..."}} DATA_END
+        """
+        inputs = [instruccion, prompt]
+        if archivo: inputs.append(archivo)
+        
+        response = model.generate_content(inputs)
+        res_text = response.text
+        respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
+        st.markdown(respuesta_visible)
+        st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
+
+        if "DATA_START" in res_text:
+            try:
+                data_match = re.search(r"DATA_START\s*(.*?)\s*DATA_END", res_text, re.DOTALL)
+                if data_match:
+                    data = json.loads(data_match.group(1))
+                    if data["ACCION"] == "GUARDAR_AUTO":
+                        guardar_o_actualizar_stock(data)
+                        st.success("✅ Stock procesado.")
+                    elif data["ACCION"] == "GUARDAR_LEED":
+                        guardar_o_actualizar_leed(data)
+                        st.success("✅ Leeds procesado.")
+                        if data.get("Fecha_Remind") and data["Fecha_Remind"] != "-":
+                            crear_evento_calendario(f"Llamar a {data['Cliente']}", data["Fecha_Remind"])
+            except: pass
