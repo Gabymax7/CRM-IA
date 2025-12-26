@@ -45,7 +45,7 @@ except Exception as e:
 
 # 2. MODELO CORREGIDO (Probamos con gemini-1.5-flash que es el estándar)
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-1.5-flash') 
+model = genai.GenerativeModel('gemini-3-flash')
 
 # --- FUNCIONES DE APOYO ---
 
@@ -122,3 +122,4 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
             # ... (Procesamiento del JSON igual al anterior) ...
         except Exception as e:
             st.error(f"Error en la IA: {e}")
+
