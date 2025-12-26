@@ -5,89 +5,64 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 
 # --- CONFIGURACIÓN ---
 SHEET_ID = "17Cn82TTSyXbipbW3zZ7cvYe6L6aDkX3EPK6xO7MTxzU"
-MI_EMAIL_CALENDARIO = "gabrielromero900@gmail.com" 
 
-st.set_page_config(page_title="CRM-IA: MyCar", page_icon="🚗", layout="wide")
+st.set_page_config(page_title="CRM-IA: MyCar", page_icon="🚗")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- CONEXIÓN ---
+# --- CONEXIÓN SEGURA ---
 def conectar():
-    SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
-    try:
-        if "gcp_service_account" in st.secrets:
-            # Solución al error AttrDict y Padding
-            creds_info = dict(st.secrets["gcp_service_account"])
-            if "private_key" in creds_info:
-                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-            creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
-        else:
-            creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
-        
-        client = gspread.authorize(creds)
-        sheet = client.open_by_key(SHEET_ID)
-        cal_service = build('calendar', 'v3', credentials=creds)
-        return sheet.worksheet("Stock"), sheet.worksheet("Leeds"), cal_service
-    except Exception as e:
-        st.error(f"Error de conexión interna: {e}")
-        return None, None, None
+    SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    # Si estamos en la nube (Streamlit Cloud)
+    if "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        # Limpiamos la clave privada para evitar el error de "Incorrect padding"
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
+    # Si estamos en la PC
+    else:
+        creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
+    
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SHEET_ID)
+    return sheet.worksheet("Stock"), sheet.worksheet("Leeds")
 
-ws_stock, ws_leeds, calendar_service = conectar()
-
-if ws_stock is None:
+try:
+    ws_stock, ws_leeds = conectar()
+except Exception as e:
+    st.error(f"Error de conexión: {e}")
     st.stop()
 
-# --- MODELO GEMINI 3 FLASH (Dic 2025) ---
+# Usamos la versión estable para evitar el error 404
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-3-flash')
-
-# --- FUNCIONES ---
-def procesar_archivo(uploaded_file):
-    if uploaded_file is not None:
-        return {"mime_type": uploaded_file.type, "data": uploaded_file.getvalue()}
-    return None
+model = genai.GenerativeModel('gemini-1.5-flash') 
 
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
-c1, c2 = st.columns(2)
-with c1: 
+col1, col2 = st.columns(2)
+with col1:
     if st.button("📊 Ver Stock"):
         st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
-with c2: 
-    # LÍNEA 91 CORREGIDA:
+with col2:
     if st.button("👥 Ver Leeds"):
         st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
-archivo = st.file_uploader("📷 Foto de Patente o Lista", type=["pdf", "jpg", "png", "jpeg"])
-
+# Chat e IA
 for m in st.session_state.messages:
     with st.chat_message(m["role"]): st.markdown(m["content"])
 
 if prompt := st.chat_input("¿Qué novedades hay?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
-
+    
     with st.chat_message("assistant"):
-        fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-        instruccion = f"Hoy es {fecha_hoy}. Eres el gestor de MyCar. Responde y genera DATA_START {{...}} DATA_END si hay que guardar algo."
-        
-        contenidos = [instruccion, prompt]
-        if archivo: 
-            img_data = procesar_archivo(archivo)
-            if img_data: contenidos.append(img_data)
-            
-        try:
-            response = model.generate_content(contenidos)
-            res_text = response.text
-            respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
-            st.markdown(respuesta_visible)
-            st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
-        except Exception as e:
-            st.error(f"Error en la IA: {e}")
+        response = model.generate_content(prompt)
+        st.markdown(response.text)
+        st.session_state.messages.append({"role": "assistant", "content": response.text})
