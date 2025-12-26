@@ -18,11 +18,12 @@ st.set_page_config(page_title="CRM-IA: MyCar Centro", page_icon="🚗", layout="
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- CONEXIÓN ---
+# --- CONEXIÓN BLINDADA ---
 def conectar():
     SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
     try:
         if "gcp_service_account" in st.secrets:
+            # Evita el error de AttrDict y Incorrect Padding
             creds_info = dict(st.secrets["gcp_service_account"])
             if "private_key" in creds_info:
                 creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
@@ -43,11 +44,11 @@ ws_stock, ws_leeds, calendar_service = conectar()
 if ws_stock is None:
     st.stop()
 
-# --- IA: GEMINI 3 FLASH PREVIEW ---
+# --- MODELO GEMINI 3 FLASH (Confirmado por diagnóstico) ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('models/gemini-3-flash-preview')
 
-# --- FUNCIONES DE BASE DE DATOS ---
+# --- FUNCIONES DE GESTIÓN ---
 def guardar_o_actualizar_stock(data):
     hoy = datetime.now().strftime("%d/%m/%Y")
     try:
@@ -67,7 +68,7 @@ def guardar_o_actualizar_leed(data):
     except:
         ws_leeds.append_row([hoy, data.get('Cliente','-'), data.get('Busca','-'), data.get('Telefono','-'), data.get('Nota','-'), data.get('Fecha_Remind','-')])
 
-def crear_evento_calendario(resumen, fecha_iso):
+def crear_evento(resumen, fecha_iso):
     try:
         event = {'summary': resumen, 'start': {'date': fecha_iso, 'timeZone': 'America/Argentina/Buenos_Aires'}, 'end': {'date': fecha_iso, 'timeZone': 'America/Argentina/Buenos_Aires'}}
         calendar_service.events().insert(calendarId=MI_EMAIL_CALENDARIO, body=event).execute()
@@ -76,13 +77,13 @@ def crear_evento_calendario(resumen, fecha_iso):
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
-c1, c2 = st.columns(2)
-with c1: 
+col1, col2 = st.columns(2)
+with col1: 
     if st.button("📊 Ver Stock"): st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
-with c2: 
+with col2: 
     if st.button("👥 Ver Leeds"): st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
-archivo = st.file_uploader("📷 PDF de Stock o Foto de Patente", type=["pdf", "jpg", "png", "jpeg"])
+archivo = st.file_uploader("📷 Subir PDF de Stock o Foto de Patente", type=["pdf", "jpg", "png", "jpeg"])
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]): st.markdown(message["content"])
@@ -93,18 +94,21 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
 
     with st.chat_message("assistant"):
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-        contexto_stock = ws_stock.get_all_records()[:15]
+        # LEER DATOS REALES PARA QUE LA IA NO INVENTE
+        stock_data = ws_stock.get_all_records()
+        leeds_data = ws_leeds.get_all_records()
         
         instruccion = f"""
         Hoy es {fecha_hoy}. Eres el gestor de MyCar Centro. 
-        REGLA CRÍTICA: Responde de forma técnica, corta y directa. PROHIBIDO saludar o ser amable.
-        STOCK ACTUAL: {contexto_stock}
+        REGLA: Responde CORTO y DIRECTO. No saludes.
+        DATOS DE STOCK REALES: {stock_data}
+        DATOS DE LEEDS REALES: {leeds_data}
 
         ACCIONES:
-        1. PDF/Foto: Extraer datos y usar GUARDAR_AUTO.
-        2. Consulta: Responder según el stock.
+        1. PDF/Foto con lista: Extraer cada auto y usar GUARDAR_AUTO.
+        2. Consulta: Responder basándote estrictamente en los datos de arriba.
         3. Nuevo interés: GUARDAR_LEED.
-        4. WhatsApp: Generar texto y usar ACCION: "WHATSAPP".
+        4. WhatsApp: Usar ACCION: "WHATSAPP" y redactar el mensaje.
 
         JSON OBLIGATORIO AL FINAL SI HAY ACCION:
         DATA_START {{"ACCION": "GUARDAR_AUTO/GUARDAR_LEED/WHATSAPP", "Cliente": "...", "Vehiculo": "...", "Patente": "...", "Año": "...", "KM": "...", "Color": "...", "Busca": "...", "Telefono": "...", "Fecha_Remind": "YYYY-MM-DD", "Mensaje": "..."}} DATA_END
@@ -130,7 +134,7 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
                 elif data["ACCION"] == "GUARDAR_LEED":
                     guardar_o_actualizar_leed(data)
                     if data.get("Fecha_Remind") and data["Fecha_Remind"] != "-":
-                        crear_evento_calendario(f"Llamar a {data['Cliente']}", data["Fecha_Remind"])
+                        crear_evento(f"Llamar a {data['Cliente']}", data["Fecha_Remind"])
                     st.success(f"Lead guardado: {data['Cliente']}")
                 elif data["ACCION"] == "WHATSAPP":
                     if data.get("Telefono") and data["Telefono"] != "-":
