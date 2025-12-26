@@ -34,51 +34,40 @@ def encontrar_fila_flexible(hoja, texto_busqueda):
     try:
         registros = hoja.get_all_records()
         texto_busqueda = str(texto_busqueda).lower().strip()
-        
-        # 1. Búsqueda por Número (ej: "borra el 1")
         if texto_busqueda.isdigit():
             idx = int(texto_busqueda) - 1
-            if 0 <= idx < len(registros):
-                return idx + 2 # +2 por header y base 1
-        
-        # 2. Búsqueda por Texto
+            if 0 <= idx < len(registros): return idx + 2 
         for i, row in enumerate(registros, start=2):
             fila_texto = " ".join([str(v).lower() for v in row.values()])
-            if texto_busqueda in fila_texto:
-                return i
+            if texto_busqueda in fila_texto: return i
         return None
     except: return None
 
-# --- CEREBRO IA (VISIÓN TOTAL DE DATOS) ---
+# --- CEREBRO IA ---
 def consultar_ia(prompt_usuario, archivo=None):
-    # Leer datos frescos
     try:
         stock_raw = ws_stock.get_all_records()
         leeds_raw = ws_leeds.get_all_records()
-        
-        # --- CORRECCIÓN CLAVE: Pasamos el DICCIONARIO COMPLETO (str(r)) ---
-        # Esto obliga a la IA a ver todas las columnas, se llamen como se llamen.
+        # Pasamos el diccionario completo para que lea "Año", "Year", etc.
         stock_txt = "\n".join([f"Auto {i+1}: {str(r)}" for i, r in enumerate(stock_raw)])
         leeds_txt = "\n".join([f"Leed {i+1}: {str(r)}" for i, r in enumerate(leeds_raw)])
-    except:
-        stock_txt = "Vacío"
-        leeds_txt = "Vacío"
+    except: stock_txt, leeds_txt = "Vacío", "Vacío"
     
     instruccion = f"""
     ERES EL GESTOR DE MYCAR.
     
-    TUS DATOS (Raw Data):
+    DATOS RAW:
     --- STOCK ---
     {stock_txt}
     --- LEEDS ---
     {leeds_txt}
     
     REGLAS:
-    1. Mira bien los datos raw. Si ves "Año", "Anio" o "Year", úsalo como el Año.
-    2. SI NO HAY CLIENTE EN LA ORDEN DE INGRESO: Asume Cliente="Agencia".
-    3. FORMATO LIMPIO: No uses JSON para responder preguntas normales.
+    1. Si no hay cliente, asume "Agencia".
+    2. Usa toda la info disponible (Año, Km, Color).
+    3. Responde limpio, sin JSON (salvo para ejecutar acciones).
     
-    JSON SOLO PARA EJECUTAR ACCIONES:
+    JSON ACCIONES:
     DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Año": "...", "Km": "...", "Color": "...", "Patente": "...", "Telefono": "...", "Mensaje": "..."}} DATA_END
     
     ACCIONES: GUARDAR_AUTO, ELIMINAR_AUTO, GUARDAR_LEED, ELIMINAR_LEED, WHATSAPP.
@@ -113,84 +102,76 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with tab1:
     archivo = st.file_uploader("📷 Adjuntar (Activa Gemini)", type=["pdf", "jpg", "png", "mp4"])
 
-    # 1. MOSTRAR MENSAJES
-    for m in st.session_state.messages:
-        with st.chat_message(m["role"]): st.markdown(m["content"])
-    
-    # --- CORRECCIÓN VISUAL: Espacio extra al final ---
-    # Esto empuja el último mensaje hacia arriba para que la barra de input no lo tape.
-    st.write("---") 
-    st.write("") 
-    st.write("") 
+    # 1. CONTENEDOR DE HISTORIAL (Ocupa el espacio superior)
+    chat_container = st.container()
+    with chat_container:
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]): st.markdown(m["content"])
+        st.write("---") # Separador final
+        st.write("") 
+        st.write("") 
 
-    # 2. INPUT ANCLADO (Siempre al final del código del tab)
+    # 2. INPUT (Al procesar, recargamos la página para ordenar todo)
     if prompt := st.chat_input("Escribe una orden..."):
+        # Guardar mensaje usuario
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Procesando..."):
-                try:
-                    respuesta = consultar_ia(prompt, archivo)
-                    
-                    texto_visible = re.sub(r"DATA_START.*?DATA_END", "", respuesta, flags=re.DOTALL).strip()
-                    if texto_visible:
-                        st.markdown(texto_visible)
-                        st.session_state.messages.append({"role": "assistant", "content": texto_visible})
-
-                    accion = False
-                    for match in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", respuesta, re.DOTALL):
-                        data = json.loads(match)
+        
+        # Mostrar temporalmente mientras procesa
+        with chat_container:
+            with st.chat_message("user"): st.markdown(prompt)
+            with st.chat_message("assistant"):
+                with st.spinner("Procesando..."):
+                    try:
+                        respuesta = consultar_ia(prompt, archivo)
                         
-                        if data["ACCION"] == "GUARDAR_AUTO":
-                            cliente_final = data.get('Cliente', 'Agencia')
-                            if not cliente_final: cliente_final = "Agencia"
+                        texto_visible = re.sub(r"DATA_START.*?DATA_END", "", respuesta, flags=re.DOTALL).strip()
+                        if texto_visible:
+                            st.session_state.messages.append({"role": "assistant", "content": texto_visible})
+                            st.markdown(texto_visible)
 
-                            meta = {'name': f"{cliente_final} - {data['Vehiculo']}", 'mimeType': 'application/vnd.google-apps.folder', 'parents': [ID_CARPETA_PADRE_DRIVE]}
-                            try:
-                                f = drive_service.files().create(body=meta, fields='webViewLink').execute()
-                                link = f.get('webViewLink')
-                            except: link = "Error Drive"
+                        # Ejecutar Acciones
+                        for match in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", respuesta, re.DOTALL):
+                            data = json.loads(match)
                             
-                            ws_stock.append_row([datetime.now().strftime("%d/%m/%Y"), cliente_final, data['Vehiculo'], data.get('Año','-'), data.get('Km','-'), data.get('Color','-'), "-", "-", data.get('Patente','-'), link])
-                            st.toast(f"✅ Guardado: {data['Vehiculo']}")
-                            accion = True
-
-                        elif data["ACCION"] == "ELIMINAR_AUTO":
-                            fila = encontrar_fila_flexible(ws_stock, data['Cliente'])
-                            if fila:
+                            if data["ACCION"] == "GUARDAR_AUTO":
+                                cliente = data.get('Cliente') or "Agencia"
+                                meta = {'name': f"{cliente} - {data['Vehiculo']}", 'mimeType': 'application/vnd.google-apps.folder', 'parents': [ID_CARPETA_PADRE_DRIVE]}
                                 try:
-                                    link_drive = ws_stock.cell(fila, 10).value 
-                                    if "folders/" in str(link_drive):
-                                        id_match = re.search(r'folders/([a-zA-Z0-9-_]+)', str(link_drive))
-                                        if id_match:
-                                            drive_service.files().delete(fileId=id_match.group(1)).execute()
-                                            st.toast("🗑️ Carpeta eliminada")
-                                except: pass
-                                
-                                ws_stock.delete_rows(fila)
-                                st.success(f"🗑️ Eliminado: {data['Cliente']}")
-                                accion = True
-                            else: st.warning(f"No encontré el auto.")
+                                    f = drive_service.files().create(body=meta, fields='webViewLink').execute()
+                                    link = f.get('webViewLink')
+                                except: link = "Error Drive"
+                                ws_stock.append_row([datetime.now().strftime("%d/%m/%Y"), cliente, data['Vehiculo'], data.get('Año','-'), data.get('Km','-'), data.get('Color','-'), "-", "-", data.get('Patente','-'), link])
+                                st.toast(f"✅ Guardado: {data['Vehiculo']}")
 
-                        elif data["ACCION"] == "ELIMINAR_LEED":
-                            fila = encontrar_fila_flexible(ws_leeds, data['Cliente'])
-                            if fila:
-                                ws_leeds.delete_rows(fila)
-                                st.success(f"🗑️ Leed eliminado: {data['Cliente']}")
-                                accion = True
-                            
-                        elif data["ACCION"] == "WHATSAPP":
-                             link = f"https://wa.me/{data.get('Telefono','')}?text={urllib.parse.quote(data.get('Mensaje',''))}"
-                             st.link_button(f"📲 WhatsApp a {data['Cliente']}", link)
-                             accion = True
+                            elif data["ACCION"] == "ELIMINAR_AUTO":
+                                fila = encontrar_fila_flexible(ws_stock, data['Cliente'])
+                                if fila:
+                                    try:
+                                        link = ws_stock.cell(fila, 10).value 
+                                        if "folders/" in str(link):
+                                            fid = re.search(r'folders/([a-zA-Z0-9-_]+)', str(link))
+                                            if fid: drive_service.files().delete(fileId=fid.group(1)).execute()
+                                    except: pass
+                                    ws_stock.delete_rows(fila)
+                                    st.success(f"🗑️ Eliminado: {data['Cliente']}")
 
-                    if accion:
-                        time.sleep(1)
-                        st.rerun()
+                            elif data["ACCION"] == "ELIMINAR_LEED":
+                                fila = encontrar_fila_flexible(ws_leeds, data['Cliente'])
+                                if fila:
+                                    ws_leeds.delete_rows(fila)
+                                    st.success("🗑️ Leed eliminado")
 
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                            elif data["ACCION"] == "WHATSAPP":
+                                link = f"https://wa.me/{data.get('Telefono','')}?text={urllib.parse.quote(data.get('Mensaje',''))}"
+                                st.link_button(f"📲 WhatsApp", link)
+
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        
+        # --- TRUCO FINAL: RECARGAR SIEMPRE ---
+        # Esto fuerza a que el mensaje nuevo se mueva ARRIBA y el input quede ABAJO limpio.
+        time.sleep(0.5)
+        st.rerun()
 
 with tab2:
     if st.button("🔄 Refrescar Stock"): st.rerun()
