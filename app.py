@@ -14,7 +14,7 @@ MI_EMAIL_CALENDARIO = "gabrielromero900@gmail.com"
 
 st.set_page_config(page_title="CRM-IA: MyCar", page_icon="🚗", layout="wide")
 
-# Inicializar historial al principio para evitar errores de sesión
+# 1. INICIALIZAR ESTADO (Evita errores de sesión)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -22,14 +22,14 @@ if "messages" not in st.session_state:
 def conectar():
     SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
     
-    # Prioridad: Streamlit Cloud (Secrets)
     if "gcp_service_account" in st.secrets:
+        # Streamlit Cloud: st.secrets ya es un diccionario
         creds_info = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_info:
             creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
     else:
-        # Uso local
+        # Uso local con el archivo .json
         creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
     
     client = gspread.authorize(creds)
@@ -43,13 +43,13 @@ except Exception as e:
     st.error(f"Error de conexión: {e}")
     st.stop()
 
-# CONFIGURACIÓN DEL MODELO CORRECTO
+# 2. MODELO CORREGIDO (Usamos el alias 'latest' para evitar el 404)
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-1.5-flash') 
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
-# --- FUNCIONES ---
+# --- FUNCIONES DE APOYO ---
 def procesar_archivo(uploaded_file):
-    """Convierte el archivo de Streamlit para que la IA lo lea"""
+    """Convierte el archivo de Streamlit a bytes para la IA"""
     if uploaded_file is not None:
         return {"mime_type": uploaded_file.type, "data": uploaded_file.getvalue()}
     return None
@@ -65,23 +65,46 @@ def crear_evento_calendario(resumen, fecha_iso):
         return True
     except: return False
 
-# ... (Las funciones guardar_o_actualizar_stock y leed se mantienen igual) ...
+def guardar_o_actualizar_stock(data):
+    hoy = datetime.now().strftime("%d/%m/%Y")
+    try:
+        celda = ws_stock.find(data['Cliente'], in_column=2)
+        fila = celda.row
+        ws_stock.update(range_name=f"D{fila}:F{fila}", values=[[data.get('Año','-'), data.get('KM','-'), data.get('Color','-')]])
+        if data.get('Patente'): ws_stock.update_cell(fila, 9, data['Patente'])
+        return "actualizado"
+    except:
+        ws_stock.append_row([hoy, data['Cliente'], data['Vehiculo'], data.get('Año','-'), data.get('KM','-'), data.get('Color','-'), "-", "-", data.get('Patente','-'), "-"])
+        return "nuevo"
+
+def guardar_o_actualizar_leed(data):
+    try:
+        hoy = datetime.now().strftime("%d/%m/%Y")
+        try:
+            celda = ws_leeds.find(data['Cliente'], in_column=2)
+            fila = celda.row
+            ws_leeds.update(range_name=f"A{fila}:F{fila}", values=[[hoy, data['Cliente'], data['Busca'], data.get('Telefono','-'), data.get('Nota','-'), data.get('Fecha_Remind','-')]])
+            return "actualizado"
+        except:
+            ws_leeds.append_row([hoy, data['Cliente'], data['Busca'], data.get('Telefono','-'), data.get('Nota','-'), data.get('Fecha_Remind','-')])
+            return "nuevo"
+    except: return "error"
 
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
-col1, col2 = st.columns(2)
-with col1: 
+c1, c2 = st.columns(2)
+with c1: 
     if st.button("📊 Ver Stock"):
         st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
-with col2: 
+with c2: 
     if st.button("👥 Ver Leeds"):
         st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
 archivo = st.file_uploader("📷 Subir foto de Patente o Lista", type=["pdf", "jpg", "png", "jpeg"])
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]): st.markdown(message["content"])
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]): st.markdown(m["content"])
 
 if prompt := st.chat_input("¿Qué novedades hay?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -90,26 +113,38 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
     with st.chat_message("assistant"):
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         instruccion = f"""
-        Hoy es {fecha_hoy}. Eres el gestor de MyCar. 
-        Si preguntan por stock, consulta estos datos: {ws_stock.get_all_records()[:15]}
+        Hoy es {fecha_hoy}. Eres el gestor de MyCar.
+        STOCK: {ws_stock.get_all_records()[:10]}
+        
         REGLAS:
-        1. PARTICULAR vende: GUARDAR_AUTO.
+        1. PARTICULAR vende: GUARDAR_AUTO. Saca Año, KM, Color.
         2. Alguien busca COMPRAR: GUARDAR_LEED.
         JSON OBLIGATORIO:
         DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Patente": "...", "Año": "...", "KM": "...", "Color": "...", "Busca": "...", "Fecha_Remind": "YYYY-MM-DD", "Nota": "..."}} DATA_END
         """
         
-        # Enviar contenido procesado
+        # Corrección del envío multimodal (Evita el TypeError)
         contenidos = [instruccion, prompt]
         if archivo:
             contenidos.append(procesar_archivo(archivo))
-        
+            
         try:
             response = model.generate_content(contenidos)
             res_text = response.text
             respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
             st.markdown(respuesta_visible)
             st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
-            # ... (Lógica de guardado JSON igual a la anterior) ...
+
+            if "DATA_START" in res_text:
+                raw_json = re.search(r"DATA_START\s*(.*?)\s*DATA_END", res_text, re.DOTALL).group(1)
+                data = json.loads(raw_json)
+                if data["ACCION"] == "GUARDAR_AUTO":
+                    guardar_o_actualizar_stock(data)
+                    st.success("✅ Stock actualizado.")
+                elif data["ACCION"] == "GUARDAR_LEED":
+                    guardar_o_actualizar_leed(data)
+                    st.success("✅ Leeds actualizado.")
+                    if data.get("Fecha_Remind") and data["Fecha_Remind"] != "-":
+                        crear_evento_calendario(f"Llamar a {data['Cliente']}", data["Fecha_Remind"])
         except Exception as e:
-            st.error(f"Error en la IA: {e}")
+            st.error(f"Error en el procesamiento: {e}")
