@@ -51,20 +51,17 @@ model = genai.GenerativeModel('models/gemini-3-flash-preview')
 def guardar_o_actualizar_stock(data):
     hoy = datetime.now().strftime("%d/%m/%Y")
     try:
-        # Busca por Cliente o Patente para actualizar
-        celda = ws_stock.find(data.get('Cliente', '---'), in_column=2)
+        celda = ws_stock.find(str(data.get('Cliente', '---')), in_column=2)
         fila = celda.row
         ws_stock.update(range_name=f"C{fila}:F{fila}", values=[[data.get('Vehiculo','-'), data.get('Año','-'), data.get('KM','-'), data.get('Color','-')]])
         if data.get('Patente'): ws_stock.update_cell(fila, 9, data['Patente'])
-        return "Actualizado"
     except:
         ws_stock.append_row([hoy, data.get('Cliente','-'), data.get('Vehiculo','-'), data.get('Año','-'), data.get('KM','-'), data.get('Color','-'), "-", "-", data.get('Patente','-'), "-"])
-        return "Nuevo"
 
 def guardar_o_actualizar_leed(data):
     hoy = datetime.now().strftime("%d/%m/%Y")
     try:
-        celda = ws_leeds.find(data.get('Cliente', '---'), in_column=2)
+        celda = ws_leeds.find(str(data.get('Cliente', '---')), in_column=2)
         fila = celda.row
         ws_leeds.update(range_name=f"A{fila}:F{fila}", values=[[hoy, data['Cliente'], data.get('Busca','-'), data.get('Telefono','-'), data.get('Nota','-'), data.get('Fecha_Remind','-')]])
     except:
@@ -74,8 +71,7 @@ def crear_evento_calendario(resumen, fecha_iso):
     try:
         event = {'summary': resumen, 'start': {'date': fecha_iso, 'timeZone': 'America/Argentina/Buenos_Aires'}, 'end': {'date': fecha_iso, 'timeZone': 'America/Argentina/Buenos_Aires'}}
         calendar_service.events().insert(calendarId=MI_EMAIL_CALENDARIO, body=event).execute()
-        return True
-    except: return False
+    except: pass
 
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
@@ -98,21 +94,20 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
     with st.chat_message("assistant"):
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
         contexto_stock = ws_stock.get_all_records()[:15]
-        contexto_leeds = ws_leeds.get_all_records()[:15]
         
         instruccion = f"""
-        Hoy es {fecha_hoy}. Eres el gestor de MyCar. Responde DIRECTO y CONCISO.
+        Hoy es {fecha_hoy}. Eres el gestor de MyCar Centro. 
+        REGLA CRÍTICA: Responde de forma técnica, corta y directa. PROHIBIDO saludar o ser amable.
         STOCK ACTUAL: {contexto_stock}
-        LEEDS ACTUALES: {contexto_leeds}
 
-        ACCIONES POSIBLES:
-        1. PDF/FOTO con lista de autos: Extraer todos y usar GUARDAR_AUTO para cada uno.
-        2. Alguien consulta stock: Responder basado en la lista.
-        3. Alguien busca comprar: GUARDAR_LEED.
-        4. Pedir mensaje de WhatsApp: Generar texto y usar ACCION: "WHATSAPP".
+        ACCIONES:
+        1. PDF/Foto: Extraer datos y usar GUARDAR_AUTO.
+        2. Consulta: Responder según el stock.
+        3. Nuevo interés: GUARDAR_LEED.
+        4. WhatsApp: Generar texto y usar ACCION: "WHATSAPP".
 
-        FORMATO JSON OBLIGATORIO:
-        DATA_START {{"ACCION": "GUARDAR_AUTO/GUARDAR_LEED/WHATSAPP/CONSULTA", "Cliente": "...", "Vehiculo": "...", "Patente": "...", "Año": "...", "KM": "...", "Color": "...", "Busca": "...", "Telefono": "...", "Fecha_Remind": "YYYY-MM-DD", "Mensaje": "..."}} DATA_END
+        JSON OBLIGATORIO AL FINAL SI HAY ACCION:
+        DATA_START {{"ACCION": "GUARDAR_AUTO/GUARDAR_LEED/WHATSAPP", "Cliente": "...", "Vehiculo": "...", "Patente": "...", "Año": "...", "KM": "...", "Color": "...", "Busca": "...", "Telefono": "...", "Fecha_Remind": "YYYY-MM-DD", "Mensaje": "..."}} DATA_END
         """
         
         contenidos = [instruccion, prompt]
@@ -126,23 +121,20 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
             st.markdown(respuesta_visible)
             st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
 
-            # Procesar JSON de respuesta
             matches = re.findall(r"DATA_START\s*(.*?)\s*DATA_END", res_text, re.DOTALL)
             for m in matches:
                 data = json.loads(m)
                 if data["ACCION"] == "GUARDAR_AUTO":
                     guardar_o_actualizar_stock(data)
-                    st.success(f"✅ {data.get('Vehiculo')} registrado.")
+                    st.success(f"Sincronizado: {data.get('Vehiculo')}")
                 elif data["ACCION"] == "GUARDAR_LEED":
                     guardar_o_actualizar_leed(data)
                     if data.get("Fecha_Remind") and data["Fecha_Remind"] != "-":
                         crear_evento_calendario(f"Llamar a {data['Cliente']}", data["Fecha_Remind"])
-                    st.success(f"✅ Lead {data['Cliente']} guardado.")
+                    st.success(f"Lead guardado: {data['Cliente']}")
                 elif data["ACCION"] == "WHATSAPP":
                     if data.get("Telefono") and data["Telefono"] != "-":
                         txt = urllib.parse.quote(data["Mensaje"])
-                        link = f"https://wa.me/{data['Telefono']}?text={txt}"
-                        st.link_button("📲 Enviar WhatsApp", link)
-            
+                        st.link_button("📲 Enviar WhatsApp", f"https://wa.me/{data['Telefono']}?text={txt}")
         except Exception as e:
             st.error(f"Error: {e}")
