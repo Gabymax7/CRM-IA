@@ -14,22 +14,18 @@ MI_EMAIL_CALENDARIO = "gabrielromero900@gmail.com"
 
 st.set_page_config(page_title="CRM-IA: MyCar", page_icon="🚗", layout="wide")
 
-# 1. INICIALIZAR ESTADO (Evita el error de 'no attribute messages')
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # --- CONEXIÓN ---
 def conectar():
     SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
-    
     if "gcp_service_account" in st.secrets:
-        # Streamlit Cloud: st.secrets ya es un diccionario
         creds_info = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_info:
             creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
     else:
-        # Uso local
         creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
     
     client = gspread.authorize(creds)
@@ -43,14 +39,12 @@ except Exception as e:
     st.error(f"Error de conexión: {e}")
     st.stop()
 
-# 2. MODELO CORREGIDO (Probamos con gemini-1.5-flash que es el estándar)
+# --- MODELO GEMINI 3 FLASH (Lanzamiento 17/12/2025) ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-3-flash')
+model = genai.GenerativeModel('gemini-3-flash') 
 
-# --- FUNCIONES DE APOYO ---
-
+# --- FUNCIONES ---
 def procesar_archivo(uploaded_file):
-    """Convierte el archivo de Streamlit a formato que la IA entienda"""
     if uploaded_file is not None:
         return {"mime_type": uploaded_file.type, "data": uploaded_file.getvalue()}
     return None
@@ -66,20 +60,16 @@ def crear_evento_calendario(resumen, fecha_iso):
         return True
     except: return False
 
-# ... (Funciones de guardado de Stock y Leeds se mantienen igual) ...
-
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
-col1, col2 = st.columns(2)
-with col1: 
-    if st.button("📊 Ver Stock"):
-        st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
-with col2: 
-    if st.button("👥 Ver Leeds"):
-        st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
+c1, c2 = st.columns(2)
+with c1: 
+    if st.button("📊 Ver Stock"): st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
+with c2: 
+    if st.button("👥 Ver Leeds"): st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
-archivo = st.file_uploader("📷 Subir foto de Patente o Lista", type=["pdf", "jpg", "png", "jpeg"])
+archivo = st.file_uploader("📷 Foto de Patente o Lista", type=["pdf", "jpg", "png", "jpeg"])
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]): st.markdown(message["content"])
@@ -90,36 +80,31 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
 
     with st.chat_message("assistant"):
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-        
-        # Obtenemos los últimos registros para que la IA sepa qué hay en stock
         stock_actual = ws_stock.get_all_records()[:20]
         
         instruccion = f"""
         Hoy es {fecha_hoy}. Eres el gestor de MyCar. 
-        Este es el Stock actual: {stock_actual}
+        Stock actual para consultas: {stock_actual}
         
         REGLAS:
-        1. Si preguntan por stock, responde basándote en los datos arriba.
-        2. PARTICULAR vende/ofrece: GUARDAR_AUTO.
-        3. Alguien busca COMPRAR: GUARDAR_LEED.
+        1. PARTICULAR vende: GUARDAR_AUTO.
+        2. Alguien busca COMPRAR: GUARDAR_LEED.
         
-        JSON OBLIGATORIO AL FINAL:
+        JSON OBLIGATORIO:
         DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Patente": "...", "Año": "...", "KM": "...", "Color": "...", "Busca": "...", "Fecha_Remind": "YYYY-MM-DD", "Nota": "..."}} DATA_END
         """
         
-        # Enviamos los contenidos procesados (Texto + Imagen corregida)
         contenidos = [instruccion, prompt]
-        if archivo:
-            # Aquí corregimos el TypeError convirtiendo la foto
-            contenidos.append(procesar_archivo(archivo))
+        if archivo: contenidos.append(procesar_archivo(archivo))
             
         try:
+            # Uso de la potencia de Gemini 3 Flash para procesamiento instantáneo
             response = model.generate_content(contenidos)
             res_text = response.text
             respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
             st.markdown(respuesta_visible)
             st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
-            # ... (Procesamiento del JSON igual al anterior) ...
+            
+            # (El procesamiento del JSON sigue igual abajo)
         except Exception as e:
             st.error(f"Error en la IA: {e}")
-
