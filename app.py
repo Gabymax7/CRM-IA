@@ -29,7 +29,7 @@ def conectar():
 
 ws_stock, ws_leeds, drive_service = conectar()
 
-# --- HELPER: BUSCADOR FLEXIBLE ---
+# --- HELPER 1: BUSCADOR FLEXIBLE ---
 def encontrar_fila_flexible(hoja, texto_busqueda):
     try:
         registros = hoja.get_all_records()
@@ -43,59 +43,59 @@ def encontrar_fila_flexible(hoja, texto_busqueda):
         return None
     except: return None
 
-# --- HELPER: LIMPIEZA DE DATOS (LA IDEA DE GABRIEL) ---
+# --- HELPER 2: FILTRO PARA AHORRAR TOKENS ---
 def filtrar_vacios(lista_registros):
-    """Corta la lectura si encuentra 3 filas vacías seguidas para ahorrar tokens."""
-    datos_utiles = []
-    vacios_seguidos = 0
-    
+    """Detiene la lectura si encuentra 3 filas vacías seguidas."""
+    datos = []
+    vacios = 0
     for r in lista_registros:
-        # Unimos todos los valores de la fila en un solo texto para ver si hay algo escrito
         contenido = "".join([str(v) for v in r.values()]).strip()
-        
-        if not contenido: # Si la fila está vacía
-            vacios_seguidos += 1
-            if vacios_seguidos >= 3: 
-                break # ¡STOP! Dejamos de leer aquí
+        if not contenido:
+            vacios += 1
+            if vacios >= 3: break
         else:
-            vacios_seguidos = 0 # Reiniciamos contador si encontramos datos
-            datos_utiles.append(r)
-            
-    return datos_utiles
+            vacios = 0
+            datos.append(r)
+    return datos
 
-# --- CEREBRO IA (CON OPTIMIZACIÓN Y PLAN B) ---
+# --- CEREBRO IA (DOBLE MOTOR + MEMORIA INTELIGENTE) ---
 def consultar_ia(prompt_usuario, archivo=None):
-    # 1. Preparar y Filtrar datos (Ahorro masivo de memoria)
+    # 1. Lectura de Datos Segura
     try:
         raw_stock = ws_stock.get_all_records()
         raw_leeds = ws_leeds.get_all_records()
         
-        # Aplicamos tu filtro inteligente
-        stock_filtrado = filtrar_vacios(raw_stock)
-        leeds_filtrado = filtrar_vacios(raw_leeds)
+        # Filtramos para no saturar a Groq
+        stock_safe = filtrar_vacios(raw_stock)
+        leeds_safe = filtrar_vacios(raw_leeds)
 
-        stock_txt = "\n".join([f"Auto {i+1}: {str(r)}" for i, r in enumerate(stock_filtrado)])
-        leeds_txt = "\n".join([f"Leed {i+1}: {str(r)}" for i, r in enumerate(leeds_filtrado)])
-    except: stock_txt, leeds_txt = "Error lectura", "Error lectura"
+        # Convertimos a texto forzando lectura de todas las columnas
+        stock_txt = "\n".join([f"Auto {i+1}: {str(r)}" for i, r in enumerate(stock_safe)])
+        leeds_txt = "\n".join([f"Leed {i+1}: {str(r)}" for i, r in enumerate(leeds_safe)])
+    except: 
+        stock_txt, leeds_txt = "Error de lectura", "Error de lectura"
     
     instruccion = f"""
     ERES EL GESTOR DE MYCAR.
+    
     DATOS ACTUALES:
     --- STOCK ---
     {stock_txt}
     --- LEEDS ---
     {leeds_txt}
     
-    REGLAS:
-    1. Si no hay cliente, asume "Agencia".
-    2. Usa toda la info disponible (Año, Km, Color).
-    3. Responde limpio (sin JSON, salvo para ejecutar acciones).
+    REGLAS OPERATIVAS:
+    1. Si ingresan un auto sin dueño, asume Cliente="Agencia".
+    2. Lee todos los campos del diccionario (Año, Km, Color) aunque tengan nombres raros.
+    3. Responde normal. Solo usa JSON para ejecutar acciones.
     
-    JSON ACCIONES: DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Año": "...", "Km": "...", "Color": "...", "Patente": "...", "Telefono": "...", "Mensaje": "..."}} DATA_END
+    FORMATO JSON PARA ACCIONES:
+    DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Año": "...", "Km": "...", "Color": "...", "Patente": "...", "Telefono": "...", "Mensaje": "..."}} DATA_END
+    
     ACCIONES: GUARDAR_AUTO, ELIMINAR_AUTO, GUARDAR_LEED, ELIMINAR_LEED, WHATSAPP.
     """
 
-    # Función interna para llamar a Gemini (Plan B)
+    # Función interna: Gemini (Respaldo o Multimedia)
     def usar_gemini():
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
@@ -104,14 +104,15 @@ def consultar_ia(prompt_usuario, archivo=None):
         res = model.generate_content(inputs)
         return res.text
 
-    # 2. Lógica de Selección de Motor
+    # 2. Selección de Motor
     if archivo:
         return usar_gemini()
     else:
         try:
+            # Intento principal: Groq
             client = Groq(api_key=st.secrets["GROQ_API_KEY"])
             mensajes = [{"role": "system", "content": instruccion}]
-            # Limitamos el historial enviado a los últimos 4 mensajes
+            # Historial corto (últimos 4) para no gastar tokens
             for m in st.session_state.messages[-4:]: 
                 mensajes.append({"role": m["role"], "content": m["content"]})
             mensajes.append({"role": "user", "content": prompt_usuario})
@@ -124,8 +125,8 @@ def consultar_ia(prompt_usuario, archivo=None):
             return completion.choices[0].message.content
         
         except Exception as e:
-            # Si Groq falla por límite, usamos Gemini silenciosamente
-            print(f"Groq saturado, cambiando a Gemini... Error: {e}")
+            # Fallback automático
+            print(f"⚠️ Groq falló ({e}). Cambiando a Gemini.")
             return usar_gemini()
 
 # --- INTERFAZ USUARIO ---
@@ -137,31 +138,36 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with tab1:
     archivo = st.file_uploader("📷 Adjuntar (Activa Gemini)", type=["pdf", "jpg", "png", "mp4"])
 
-    # Contenedor Historial
+    # Contenedor del Historial (Arriba)
     chat_container = st.container()
     with chat_container:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
+        # Espacio para que el último mensaje no quede tapado
         st.write("---") 
-        st.write("") 
-        st.write("") 
+        st.write("")
+        st.write("")
 
-    # Input
+    # Input (Abajo y Fijo)
     if prompt := st.chat_input("Escribe una orden..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         
+        # Mostrar mensaje usuario visualmente
         with chat_container:
             with st.chat_message("user"): st.markdown(prompt)
+            
             with st.chat_message("assistant"):
                 with st.spinner("Procesando..."):
                     try:
                         respuesta = consultar_ia(prompt, archivo)
                         
+                        # Limpiar JSON de la vista
                         texto_visible = re.sub(r"DATA_START.*?DATA_END", "", respuesta, flags=re.DOTALL).strip()
                         if texto_visible:
-                            st.session_state.messages.append({"role": "assistant", "content": texto_visible})
                             st.markdown(texto_visible)
+                            st.session_state.messages.append({"role": "assistant", "content": texto_visible})
 
+                        # Ejecutar Acciones
                         for match in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", respuesta, re.DOTALL):
                             data = json.loads(match)
                             
@@ -200,13 +206,22 @@ with tab1:
                     except Exception as e:
                         st.error(f"Error: {e}")
         
+        # Refresco forzado para limpiar input
         time.sleep(0.5)
         st.rerun()
 
+# --- TABS DE DATOS (CON PROTECCIÓN ANTI-CRASH) ---
 with tab2:
     if st.button("🔄 Refrescar Stock"): st.rerun()
-    st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
+    # .astype(str) convierte TODO a texto para evitar el error de pyarrow/Año
+    try:
+        df_stock = pd.DataFrame(ws_stock.get_all_records()).astype(str)
+        st.dataframe(df_stock, use_container_width=True)
+    except: st.info("Stock vacío o error de lectura.")
 
 with tab3:
     if st.button("🔄 Refrescar Leeds"): st.rerun()
-    st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
+    try:
+        df_leeds = pd.DataFrame(ws_leeds.get_all_records()).astype(str)
+        st.dataframe(df_leeds, use_container_width=True)
+    except: st.info("Lista de Leeds vacía.")
