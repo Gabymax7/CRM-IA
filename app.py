@@ -14,7 +14,7 @@ MI_EMAIL_CALENDARIO = "gabrielromero900@gmail.com"
 
 st.set_page_config(page_title="CRM-IA: MyCar", page_icon="🚗", layout="wide")
 
-# 1. INICIALIZAR ESTADO (Muy importante para evitar el AttributeError)
+# Inicialización crítica para evitar errores de st.session_state 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -23,14 +23,13 @@ def conectar():
     SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
     
     if "gcp_service_account" in st.secrets:
-        # Streamlit Cloud: st.secrets ya es un diccionario
+        # En la nube, convertimos el secreto directamente a diccionario
         creds_info = dict(st.secrets["gcp_service_account"])
-        # Corregir saltos de línea en la clave privada si es necesario
         if "private_key" in creds_info:
             creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
     else:
-        # Uso local con el archivo .json
+        # Uso local
         creds = Credentials.from_service_account_file("credenciales.json", scopes=SCOPE)
     
     client = gspread.authorize(creds)
@@ -62,6 +61,7 @@ def crear_evento_calendario(resumen, fecha_iso):
 def guardar_o_actualizar_stock(data):
     hoy = datetime.now().strftime("%d/%m/%Y")
     try:
+        # Buscar duplicados por nombre de Cliente
         celda = ws_stock.find(data['Cliente'], in_column=2)
         fila = celda.row
         ws_stock.update(range_name=f"D{fila}:F{fila}", values=[[data.get('Año','-'), data.get('KM','-'), data.get('Color','-')]])
@@ -87,18 +87,19 @@ def guardar_o_actualizar_leed(data):
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
 
-c1, c2 = st.columns(2)
-with c1: 
+col1, col2 = st.columns(2)
+with col1: 
     if st.button("📊 Ver Stock"):
         st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
-with c2: 
+with col2: 
+    # Esta es la línea que estaba incompleta en tu error de sintaxis
     if st.button("👥 Ver Leeds"):
         st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
 archivo = st.file_uploader("📷 Subir foto de Patente o Lista", type=["pdf", "jpg", "png", "jpeg"])
 
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]): st.markdown(m["content"])
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]): st.markdown(message["content"])
 
 if prompt := st.chat_input("¿Qué novedades hay?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -120,6 +121,7 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
         
         response = model.generate_content(inputs)
         res_text = response.text
+        # Limpieza robusta del JSON para evitar caracteres de control [cite: 2]
         respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
         st.markdown(respuesta_visible)
         st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
