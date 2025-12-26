@@ -43,20 +43,44 @@ def encontrar_fila_flexible(hoja, texto_busqueda):
         return None
     except: return None
 
-# --- CEREBRO IA ---
+# --- HELPER: LIMPIEZA DE DATOS (LA IDEA DE GABRIEL) ---
+def filtrar_vacios(lista_registros):
+    """Corta la lectura si encuentra 3 filas vacías seguidas para ahorrar tokens."""
+    datos_utiles = []
+    vacios_seguidos = 0
+    
+    for r in lista_registros:
+        # Unimos todos los valores de la fila en un solo texto para ver si hay algo escrito
+        contenido = "".join([str(v) for v in r.values()]).strip()
+        
+        if not contenido: # Si la fila está vacía
+            vacios_seguidos += 1
+            if vacios_seguidos >= 3: 
+                break # ¡STOP! Dejamos de leer aquí
+        else:
+            vacios_seguidos = 0 # Reiniciamos contador si encontramos datos
+            datos_utiles.append(r)
+            
+    return datos_utiles
+
+# --- CEREBRO IA (CON OPTIMIZACIÓN Y PLAN B) ---
 def consultar_ia(prompt_usuario, archivo=None):
+    # 1. Preparar y Filtrar datos (Ahorro masivo de memoria)
     try:
-        stock_raw = ws_stock.get_all_records()
-        leeds_raw = ws_leeds.get_all_records()
-        # Pasamos el diccionario completo para que lea "Año", "Year", etc.
-        stock_txt = "\n".join([f"Auto {i+1}: {str(r)}" for i, r in enumerate(stock_raw)])
-        leeds_txt = "\n".join([f"Leed {i+1}: {str(r)}" for i, r in enumerate(leeds_raw)])
-    except: stock_txt, leeds_txt = "Vacío", "Vacío"
+        raw_stock = ws_stock.get_all_records()
+        raw_leeds = ws_leeds.get_all_records()
+        
+        # Aplicamos tu filtro inteligente
+        stock_filtrado = filtrar_vacios(raw_stock)
+        leeds_filtrado = filtrar_vacios(raw_leeds)
+
+        stock_txt = "\n".join([f"Auto {i+1}: {str(r)}" for i, r in enumerate(stock_filtrado)])
+        leeds_txt = "\n".join([f"Leed {i+1}: {str(r)}" for i, r in enumerate(leeds_filtrado)])
+    except: stock_txt, leeds_txt = "Error lectura", "Error lectura"
     
     instruccion = f"""
     ERES EL GESTOR DE MYCAR.
-    
-    DATOS RAW:
+    DATOS ACTUALES:
     --- STOCK ---
     {stock_txt}
     --- LEEDS ---
@@ -65,33 +89,44 @@ def consultar_ia(prompt_usuario, archivo=None):
     REGLAS:
     1. Si no hay cliente, asume "Agencia".
     2. Usa toda la info disponible (Año, Km, Color).
-    3. Responde limpio, sin JSON (salvo para ejecutar acciones).
+    3. Responde limpio (sin JSON, salvo para ejecutar acciones).
     
-    JSON ACCIONES:
-    DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Año": "...", "Km": "...", "Color": "...", "Patente": "...", "Telefono": "...", "Mensaje": "..."}} DATA_END
-    
+    JSON ACCIONES: DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Año": "...", "Km": "...", "Color": "...", "Patente": "...", "Telefono": "...", "Mensaje": "..."}} DATA_END
     ACCIONES: GUARDAR_AUTO, ELIMINAR_AUTO, GUARDAR_LEED, ELIMINAR_LEED, WHATSAPP.
     """
 
-    if archivo:
+    # Función interna para llamar a Gemini (Plan B)
+    def usar_gemini():
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        model = genai.GenerativeModel('models/gemini-3-flash-preview')
-        inputs = [instruccion, prompt_usuario, {"mime_type": archivo.type, "data": archivo.getvalue()}]
+        model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
+        inputs = [instruccion, prompt_usuario]
+        if archivo: inputs.append({"mime_type": archivo.type, "data": archivo.getvalue()})
         res = model.generate_content(inputs)
         return res.text
-    else:
-        client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-        mensajes = [{"role": "system", "content": instruccion}]
-        for m in st.session_state.messages[-4:]: 
-            mensajes.append({"role": m["role"], "content": m["content"]})
-        mensajes.append({"role": "user", "content": prompt_usuario})
 
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=mensajes,
-            temperature=0
-        )
-        return completion.choices[0].message.content
+    # 2. Lógica de Selección de Motor
+    if archivo:
+        return usar_gemini()
+    else:
+        try:
+            client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+            mensajes = [{"role": "system", "content": instruccion}]
+            # Limitamos el historial enviado a los últimos 4 mensajes
+            for m in st.session_state.messages[-4:]: 
+                mensajes.append({"role": m["role"], "content": m["content"]})
+            mensajes.append({"role": "user", "content": prompt_usuario})
+
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=mensajes,
+                temperature=0
+            )
+            return completion.choices[0].message.content
+        
+        except Exception as e:
+            # Si Groq falla por límite, usamos Gemini silenciosamente
+            print(f"Groq saturado, cambiando a Gemini... Error: {e}")
+            return usar_gemini()
 
 # --- INTERFAZ USUARIO ---
 st.title("CRM IA")
@@ -102,21 +137,19 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with tab1:
     archivo = st.file_uploader("📷 Adjuntar (Activa Gemini)", type=["pdf", "jpg", "png", "mp4"])
 
-    # 1. CONTENEDOR DE HISTORIAL (Ocupa el espacio superior)
+    # Contenedor Historial
     chat_container = st.container()
     with chat_container:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
-        st.write("---") # Separador final
+        st.write("---") 
         st.write("") 
         st.write("") 
 
-    # 2. INPUT (Al procesar, recargamos la página para ordenar todo)
+    # Input
     if prompt := st.chat_input("Escribe una orden..."):
-        # Guardar mensaje usuario
         st.session_state.messages.append({"role": "user", "content": prompt})
         
-        # Mostrar temporalmente mientras procesa
         with chat_container:
             with st.chat_message("user"): st.markdown(prompt)
             with st.chat_message("assistant"):
@@ -129,7 +162,6 @@ with tab1:
                             st.session_state.messages.append({"role": "assistant", "content": texto_visible})
                             st.markdown(texto_visible)
 
-                        # Ejecutar Acciones
                         for match in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", respuesta, re.DOTALL):
                             data = json.loads(match)
                             
@@ -168,8 +200,6 @@ with tab1:
                     except Exception as e:
                         st.error(f"Error: {e}")
         
-        # --- TRUCO FINAL: RECARGAR SIEMPRE ---
-        # Esto fuerza a que el mensaje nuevo se mueva ARRIBA y el input quede ABAJO limpio.
         time.sleep(0.5)
         st.rerun()
 
