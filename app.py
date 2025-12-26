@@ -41,7 +41,7 @@ def encontrar_fila_flexible(hoja, texto_busqueda):
             if 0 <= idx < len(registros):
                 return idx + 2 # +2 por header y base 1
         
-        # 2. Búsqueda por Texto (ej: "borra el fiesta")
+        # 2. Búsqueda por Texto
         for i, row in enumerate(registros, start=2):
             fila_texto = " ".join([str(v).lower() for v in row.values()])
             if texto_busqueda in fila_texto:
@@ -49,41 +49,43 @@ def encontrar_fila_flexible(hoja, texto_busqueda):
         return None
     except: return None
 
-# --- CEREBRO IA (MEJORADO: AUTO-COMPLETAR Y EXPLICAR) ---
+# --- CEREBRO IA (AHORA LEE TODO) ---
 def consultar_ia(prompt_usuario, archivo=None):
     # Leer datos frescos
     try:
         stock_raw = ws_stock.get_all_records()
         leeds_raw = ws_leeds.get_all_records()
-        stock_txt = "\n".join([f"{i+1}. {r['Cliente']} - {r['Vehiculo']} ({r.get('Año','')})" for i, r in enumerate(stock_raw)])
-        leeds_txt = "\n".join([f"{i+1}. {r['Cliente']} busca {r['Busca']}" for i, r in enumerate(leeds_raw)])
+        
+        # --- CORRECCIÓN AQUÍ: Le pasamos TODAS las columnas a la IA ---
+        stock_txt = []
+        for i, r in enumerate(stock_raw):
+            info_auto = f"Índice {i+1}: Cliente: {r.get('Cliente','?')} | Auto: {r.get('Vehiculo','?')} | Año: {r.get('Año','?')} | Km: {r.get('Km','?')} | Color: {r.get('Color','?')}"
+            stock_txt.append(info_auto)
+        stock_txt = "\n".join(stock_txt)
+        
+        leeds_txt = "\n".join([f"{i+1}. {r['Cliente']} busca {r['Busca']} (Tel: {r.get('Telefono','')})" for i, r in enumerate(leeds_raw)])
     except:
         stock_txt = "Vacío"
         leeds_txt = "Vacío"
     
     instruccion = f"""
-    ERES EL GESTOR EJECUTIVO DE MYCAR. TU TRABAJO ES RESOLVER, NO PREGUNTAR.
+    ERES EL GESTOR DE MYCAR.
     
-    DATOS ACTUALES:
+    TUS DATOS COMPLETOS:
     --- STOCK ---
     {stock_txt}
     --- LEEDS ---
     {leeds_txt}
     
-    REGLAS DE ORO (PRIORIDAD MÁXIMA):
-    1. INGRESOS INTELIGENTES: Si te dicen "ingresa Ford Ka 2020...", y NO mencionan dueño, ASUME que el Cliente es "Agencia".
-       - ¡NO PIDAS EL FORMATO! Genera el JSON con los datos que tengas (Año, Color, Km, etc.).
+    REGLAS:
+    1. SI NO HAY CLIENTE EN LA ORDEN DE INGRESO: Asume Cliente="Agencia".
+    2. SI PIDEN INFO: Tienes el Año, Km y Color arriba. Úsalos.
+    3. FORMATO LIMPIO: No uses JSON para responder preguntas normales.
     
-    2. EXPLICACIONES VISIBLES: Si el usuario pregunta "¿cómo cargo?" o "muéstrame el formato":
-       - RESPONDE CON TEXTO NORMAL (Ej: "Solo escribe: Ingresa Toyota Corolla 2021 blanco").
-       - JAMÁS uses las etiquetas DATA_START para dar ejemplos (porque se ocultan).
-
-    3. BORRADO: Si dicen "borra el 1" o "Borra a Juan", genera JSON de eliminar.
-    
-    FORMATO JSON (SOLO PARA EJECUTAR LA ACCIÓN REAL):
+    JSON SOLO PARA EJECUTAR ACCIONES (Guardar/Borrar):
     DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Año": "...", "Km": "...", "Color": "...", "Patente": "...", "Telefono": "...", "Mensaje": "..."}} DATA_END
     
-    ACCIONES VÁLIDAS: GUARDAR_AUTO, ELIMINAR_AUTO, GUARDAR_LEED, ELIMINAR_LEED, WHATSAPP.
+    ACCIONES: GUARDAR_AUTO, ELIMINAR_AUTO, GUARDAR_LEED, ELIMINAR_LEED, WHATSAPP.
     """
 
     if archivo:
@@ -115,11 +117,14 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with tab1:
     archivo = st.file_uploader("📷 Adjuntar (Activa Gemini)", type=["pdf", "jpg", "png", "mp4"])
 
-    # 1. Historial
+    # 1. BUCLE DE MENSAJES SIMPLE (Mejora visual)
     for m in st.session_state.messages:
         with st.chat_message(m["role"]): st.markdown(m["content"])
+    
+    # Espacio invisible para empujar el contenido arriba si es necesario
+    st.write("") 
 
-    # 2. Input (Anclado abajo)
+    # 2. INPUT ANCLADO ABAJO
     if prompt := st.chat_input("Escribe una orden..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
@@ -129,7 +134,7 @@ with tab1:
                 try:
                     respuesta = consultar_ia(prompt, archivo)
                     
-                    # Mostrar texto limpio (sin JSON)
+                    # Mostrar texto limpio
                     texto_visible = re.sub(r"DATA_START.*?DATA_END", "", respuesta, flags=re.DOTALL).strip()
                     if texto_visible:
                         st.markdown(texto_visible)
@@ -141,7 +146,6 @@ with tab1:
                         data = json.loads(match)
                         
                         if data["ACCION"] == "GUARDAR_AUTO":
-                            # Default "Agencia" si viene vacío
                             cliente_final = data.get('Cliente', 'Agencia')
                             if not cliente_final: cliente_final = "Agencia"
 
@@ -159,7 +163,6 @@ with tab1:
                             fila = encontrar_fila_flexible(ws_stock, data['Cliente'])
                             if fila:
                                 try:
-                                    # Borrar carpeta Drive
                                     link_drive = ws_stock.cell(fila, 10).value 
                                     if "folders/" in str(link_drive):
                                         id_match = re.search(r'folders/([a-zA-Z0-9-_]+)', str(link_drive))
@@ -171,7 +174,7 @@ with tab1:
                                 ws_stock.delete_rows(fila)
                                 st.success(f"🗑️ Eliminado: {data['Cliente']}")
                                 accion = True
-                            else: st.warning(f"No encontré el auto de '{data['Cliente']}'")
+                            else: st.warning(f"No encontré el auto.")
 
                         elif data["ACCION"] == "ELIMINAR_LEED":
                             fila = encontrar_fila_flexible(ws_leeds, data['Cliente'])
