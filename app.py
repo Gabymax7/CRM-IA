@@ -39,26 +39,21 @@ except Exception as e:
     st.error(f"Error de conexión: {e}")
     st.stop()
 
-# --- MODELO GEMINI 3 FLASH ---
+# --- MODELO GEMINI 3 FLASH (Lanzado el 17/12/2025) ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-3-flash') # Versión última a dic 2025
+
+# Probamos con el nombre corto; si falla, la librería se encargará de reportarlo
+try:
+    model = genai.GenerativeModel('gemini-3-flash') 
+except:
+    # Alternativa si la región aún requiere el nombre técnico
+    model = genai.GenerativeModel('models/gemini-3-flash')
 
 # --- FUNCIONES ---
 def procesar_archivo(uploaded_file):
     if uploaded_file is not None:
         return {"mime_type": uploaded_file.type, "data": uploaded_file.getvalue()}
     return None
-
-def crear_evento_calendario(resumen, fecha_iso):
-    try:
-        event = {
-            'summary': resumen,
-            'start': {'date': fecha_iso, 'timeZone': 'America/Argentina/Buenos_Aires'},
-            'end': {'date': fecha_iso, 'timeZone': 'America/Argentina/Buenos_Aires'},
-        }
-        calendar_service.events().insert(calendarId=MI_EMAIL_CALENDARIO, body=event).execute()
-        return True
-    except: return False
 
 # --- INTERFAZ ---
 st.title("🤖 CRM-IA: MyCar Centro")
@@ -68,7 +63,6 @@ with c1:
     if st.button("📊 Ver Stock"):
         st.dataframe(pd.DataFrame(ws_stock.get_all_records()))
 with c2: 
-    # LÍNEA 91 CORREGIDA: Se cerraron todos los paréntesis correctamente
     if st.button("👥 Ver Leeds"):
         st.dataframe(pd.DataFrame(ws_leeds.get_all_records()))
 
@@ -83,11 +77,12 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
 
     with st.chat_message("assistant"):
         fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-        stock_actual = ws_stock.get_all_records()[:20]
+        stock_actual = ws_stock.get_all_records()[:15]
         
         instruccion = f"""
         Hoy es {fecha_hoy}. Eres el gestor de MyCar. 
-        Stock actual: {stock_actual}
+        Usas el modelo Gemini 3 Flash (última versión dic-2025).
+        Stock disponible: {stock_actual}
         REGLAS:
         1. PARTICULAR vende: GUARDAR_AUTO.
         2. Alguien busca COMPRAR: GUARDAR_LEED.
@@ -99,10 +94,11 @@ if prompt := st.chat_input("¿Qué novedades hay?"):
         if archivo: contenidos.append(procesar_archivo(archivo))
             
         try:
+            # Gemini 3 Flash es extremadamente rápido para estas tareas
             response = model.generate_content(contenidos)
             res_text = response.text
             respuesta_visible = re.sub(r"DATA_START.*?DATA_END", "", res_text, flags=re.DOTALL).strip()
             st.markdown(respuesta_visible)
             st.session_state.messages.append({"role": "assistant", "content": respuesta_visible})
         except Exception as e:
-            st.error(f"Error en la IA: {e}")
+            st.error(f"Error en la IA: {e}. Intenta reiniciar la app.")
