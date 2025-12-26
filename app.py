@@ -49,21 +49,17 @@ def encontrar_fila_flexible(hoja, texto_busqueda):
         return None
     except: return None
 
-# --- CEREBRO IA (AHORA LEE TODO) ---
+# --- CEREBRO IA (VISIÓN TOTAL DE DATOS) ---
 def consultar_ia(prompt_usuario, archivo=None):
     # Leer datos frescos
     try:
         stock_raw = ws_stock.get_all_records()
         leeds_raw = ws_leeds.get_all_records()
         
-        # --- CORRECCIÓN AQUÍ: Le pasamos TODAS las columnas a la IA ---
-        stock_txt = []
-        for i, r in enumerate(stock_raw):
-            info_auto = f"Índice {i+1}: Cliente: {r.get('Cliente','?')} | Auto: {r.get('Vehiculo','?')} | Año: {r.get('Año','?')} | Km: {r.get('Km','?')} | Color: {r.get('Color','?')}"
-            stock_txt.append(info_auto)
-        stock_txt = "\n".join(stock_txt)
-        
-        leeds_txt = "\n".join([f"{i+1}. {r['Cliente']} busca {r['Busca']} (Tel: {r.get('Telefono','')})" for i, r in enumerate(leeds_raw)])
+        # --- CORRECCIÓN CLAVE: Pasamos el DICCIONARIO COMPLETO (str(r)) ---
+        # Esto obliga a la IA a ver todas las columnas, se llamen como se llamen.
+        stock_txt = "\n".join([f"Auto {i+1}: {str(r)}" for i, r in enumerate(stock_raw)])
+        leeds_txt = "\n".join([f"Leed {i+1}: {str(r)}" for i, r in enumerate(leeds_raw)])
     except:
         stock_txt = "Vacío"
         leeds_txt = "Vacío"
@@ -71,18 +67,18 @@ def consultar_ia(prompt_usuario, archivo=None):
     instruccion = f"""
     ERES EL GESTOR DE MYCAR.
     
-    TUS DATOS COMPLETOS:
+    TUS DATOS (Raw Data):
     --- STOCK ---
     {stock_txt}
     --- LEEDS ---
     {leeds_txt}
     
     REGLAS:
-    1. SI NO HAY CLIENTE EN LA ORDEN DE INGRESO: Asume Cliente="Agencia".
-    2. SI PIDEN INFO: Tienes el Año, Km y Color arriba. Úsalos.
+    1. Mira bien los datos raw. Si ves "Año", "Anio" o "Year", úsalo como el Año.
+    2. SI NO HAY CLIENTE EN LA ORDEN DE INGRESO: Asume Cliente="Agencia".
     3. FORMATO LIMPIO: No uses JSON para responder preguntas normales.
     
-    JSON SOLO PARA EJECUTAR ACCIONES (Guardar/Borrar):
+    JSON SOLO PARA EJECUTAR ACCIONES:
     DATA_START {{"ACCION": "...", "Cliente": "...", "Vehiculo": "...", "Año": "...", "Km": "...", "Color": "...", "Patente": "...", "Telefono": "...", "Mensaje": "..."}} DATA_END
     
     ACCIONES: GUARDAR_AUTO, ELIMINAR_AUTO, GUARDAR_LEED, ELIMINAR_LEED, WHATSAPP.
@@ -117,14 +113,17 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with tab1:
     archivo = st.file_uploader("📷 Adjuntar (Activa Gemini)", type=["pdf", "jpg", "png", "mp4"])
 
-    # 1. BUCLE DE MENSAJES SIMPLE (Mejora visual)
+    # 1. MOSTRAR MENSAJES
     for m in st.session_state.messages:
         with st.chat_message(m["role"]): st.markdown(m["content"])
     
-    # Espacio invisible para empujar el contenido arriba si es necesario
+    # --- CORRECCIÓN VISUAL: Espacio extra al final ---
+    # Esto empuja el último mensaje hacia arriba para que la barra de input no lo tape.
+    st.write("---") 
+    st.write("") 
     st.write("") 
 
-    # 2. INPUT ANCLADO ABAJO
+    # 2. INPUT ANCLADO (Siempre al final del código del tab)
     if prompt := st.chat_input("Escribe una orden..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
@@ -134,13 +133,11 @@ with tab1:
                 try:
                     respuesta = consultar_ia(prompt, archivo)
                     
-                    # Mostrar texto limpio
                     texto_visible = re.sub(r"DATA_START.*?DATA_END", "", respuesta, flags=re.DOTALL).strip()
                     if texto_visible:
                         st.markdown(texto_visible)
                         st.session_state.messages.append({"role": "assistant", "content": texto_visible})
 
-                    # EJECUTAR ACCIONES
                     accion = False
                     for match in re.findall(r"DATA_START\s*(.*?)\s*DATA_END", respuesta, re.DOTALL):
                         data = json.loads(match)
